@@ -12,6 +12,8 @@ Selected model is at capacity. Please try a different model.
 
 用户随后再次反馈：点击旧会话即卡死，强制退出应用。该现象与模型容量错误分别记录，尚无足够证据确定 UI 卡死根因。旧会话标题约 7,700 字符；尝试通过应用工具缩短标题失败，返回 `no rollout found for thread id`，没有修改会话历史或本地数据库，也没有宣称应用问题已修复。后续工作在当前会话继续，不再打开旧会话，并减少单次工具输出。
 
+只读检查应用日志发现，2026-09-30 15:27:18 UTC 对旧会话加载记录有 `Conversation state not found`；16:20:30 UTC 有成功归档记录。会话状态异常是可核查线索，而不是已确认的 UI 卡死根因；没有取得 renderer 卡死堆栈，不把标题长度或模型容量错误当作定论。
+
 恢复过程中采取的措施：读取已有成果而不重新克隆；分阶段执行；限制命令输出；使用临时 Go 缓存；测试以本地模拟供应商为主；所有回归脚本都有时限；持续记录可继续的位置。客户端模型服务是否有容量不是项目代码可以控制的，因此不能承诺该类错误永不再发生。
 
 ## 实现位置
@@ -48,3 +50,15 @@ Selected model is at capacity. Please try a different model.
 本机 Docker daemon 没有运行，未实际构建或启动 Compose 容器。上游要求 Go 1.27，本机为 Go 1.26.5，因此没有编译上游 Bifrost dev 树。控制层使用独立 Go 1.26 模块并已编译测试。
 
 没有使用真实供应商凭证，没有产生真实模型调用费用，也没有把 StorePilot 等现有项目切到新网关。上线前仍需配置真实模型 / 当前价格 / 供应商配额，并在目标服务器验证 Bifrost 镜像和小流量供应商调用。不要把模拟测试通过等同于供应商账户联通或目标机器容量验证。
+
+## GitHub 交付状态
+
+Fork 为 `pcyan3166/llmHub`，上游 remote 保留 `maximhq/bifrost`。本地实现已提交为 `dde49bf`，分支 `codex/llmhub-control-plane`。
+
+推送尚未成功：本机 Git 返回 `could not read Username for 'https://github.com': terminal prompts disabled`；GitHub 连接器创建分支返回 403 `Resource not accessible by integration`。尚未创建 PR，远端没有本次实现。需要完成本机 Git 登录或给予连接器仓库 Contents 写权限；不要在聊天中传递密码或 Token。
+
+本机 Git 授权后可继续：
+
+```bash
+git push --set-upstream origin codex/llmhub-control-plane
+```
