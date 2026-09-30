@@ -1,7 +1,7 @@
 import { createApi, fetchBaseQuery } from "@reduxjs/toolkit/query/react";
 import { configureStore, createSlice, PayloadAction } from "@reduxjs/toolkit";
 import { setupListeners } from "@reduxjs/toolkit/query";
-import type { ConfigResponse, Config, Key, Overview } from "./types";
+import type { ConfigResponse, Config, Key, Overview, PricingResponse } from "./types";
 
 const session = createSlice({
 	name: "session",
@@ -27,6 +27,7 @@ export const api = createApi({
 	tagTypes: ["Config", "Keys", "Usage"],
 	endpoints: (build) => ({
 		config: build.query<ConfigResponse, void>({ query: () => "config", providesTags: ["Config"] }),
+		pricing: build.query<PricingResponse, void>({ query: () => "pricing", providesTags: ["Config"] }),
 		overview: build.query<Overview, { month: string; project: string }>({
 			query: ({ month, project }) => `overview?month=${encodeURIComponent(month)}&project=${encodeURIComponent(project)}`,
 			providesTags: ["Usage"],
@@ -51,7 +52,15 @@ export const store = configureStore({
 	middleware: (getDefaultMiddleware) => getDefaultMiddleware().concat(api.middleware),
 });
 setupListeners(store.dispatch);
-export const { useConfigQuery, useOverviewQuery, useKeysQuery, useSaveMutation, useCreateKeyMutation, useRevokeKeyMutation } = api;
+export const {
+	useConfigQuery,
+	usePricingQuery,
+	useOverviewQuery,
+	useKeysQuery,
+	useSaveMutation,
+	useCreateKeyMutation,
+	useRevokeKeyMutation,
+} = api;
 export function errorMessage(error: unknown): string {
 	if (typeof error === "object" && error && "data" in error) {
 		const data = error.data as { error?: { message?: string } };

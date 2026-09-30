@@ -11,6 +11,7 @@
 - 多项目共用的 FIFO 队列、并发、60 秒滑动窗口 RPM / TPM、排队超时、取消和 429 冷却。
 - 在发起调用前原子预留月预算，结束后结算；重试和备用路由独立记录。
 - 项目月度用量、场景 / 模型成本明细、请求记录、每次调用价格快照、配置版本历史。
+- 时区 / 周几 / 跨午夜时段价格、节假日例外、缓存输入独立单价，以及场景级当前预估成本优先路由。
 - SQLite WAL、单实例文件锁、异常中断恢复、30 天明细清理；月度项目汇总不受明细清理影响。
 - Node 与 Python 轻量客户端、本地无费用模拟环境、回归测试、CI、Docker Compose 和 Nginx 配置。
 
@@ -45,6 +46,8 @@ GOTOOLCHAIN=local go run ./cmd/demo -listen 127.0.0.1:8090
 ```
 
 打开 <http://127.0.0.1:8090>，使用演示管理员令牌 `llmhub-local-demo-admin-token`。这不是生产密钥。模拟服务只监听 loopback，不访问任何外部模型；数据存放在临时目录，退出后清除。控制台明确显示模拟环境状态。
+
+需要跨预览重启保留配置、密钥和用量时，给 demo 传 `-db /absolute/path/to/demo.db`。已有数据库不会重新导入 seed 或重复签发演示密钥。该模式仍然只调用本机 mock，不能作为生产供应商验证。
 
 ## 生产配置
 
@@ -112,7 +115,7 @@ Python 客户端位于 `hub/sdk/python/llmhub.py`，使用标准库，无额外�
 
 `GET /v1/models` 列出密钥所属项目可用的场景别名。也可以用 `X-LLMHub-Scene`，但同时传 `model` 时，两者必须指向同一个场景。
 
-响应保持 OpenAI 兼容格式，并附加 `X-Request-ID`、`X-LLMHub-Profile`、`X-LLMHub-Model` 和 `X-LLMHub-Queue-MS`。
+响应保持 OpenAI 兼容格式，并附加 `X-Request-ID`、`X-LLMHub-Profile`、`X-LLMHub-Model`、`X-LLMHub-Queue-MS` 和 `X-LLMHub-Price-Window`。
 
 ## 配置 API
 
@@ -121,17 +124,36 @@ Python 客户端位于 `hub/sdk/python/llmhub.py`，使用标准库，无额外�
 | 接口 | 行为 |
 | --- | --- |
 | `GET /api/llmhub/config` | 获取全部配置与版本 |
+| `GET /api/llmhub/pricing` | 服务端当前时间 `at` 与已解析当前价格的 `profiles`；只读，不可作为配置提交 |
 | `PUT /api/llmhub/config` | 提交 `{config, version}`，版本过期返回 409 |
 | `GET /api/llmhub/keys` | 列出密钥摘要 |
 | `POST /api/llmhub/keys` | 提交 `{project_id}`，签发并一次返回明文 |
 | `DELETE /api/llmhub/keys/{id}` | 吊销密钥 |
 | `GET /api/llmhub/overview?month=2026-10&project=storepilot` | 项目汇总、近期记录、成本明细与限额池状态 |
 
+## 峰谷价格与成本路由
+
+在“模型 Profiles → 编辑”中配置默认未缓存输入、缓存输入和输出价格，再启用“时段计价”。时段具有独立的完整单价，未命中任何时段时使用默认价格。周几采用 ISO 编号（周一 1 至周日 7），时间为 `HH:MM`，开始包含、结束不包含；结束可用 `24:00`，跨午夜时段按开始日匹配。重叠时段、重复标识、无效日期或时区会被拒绝。
+
+时段的 `timezone` 与节假日的 `calendar_timezone` 分开设置，后者缺省继承前者。`excluded_dates` 按日历时区判断，当天全部使用默认价格，优先于每周时段。IANA 时区遵循夏令时本地钟表规则；例如秋季重复的 01:30 两次均按同一时段计价。
+
+`deploy/llmhub/deepseek-pricing.example.json` 是可加入配置 `profiles` 的 Profile 示例，不是完整 seed。接入前创建 `deepseek-shared` 限额池，并在 Bifrost 配置 DeepSeek 的 `primary` 密钥。示例依据 2026-10-01 核对的 [DeepSeek 官方价格](https://api-docs.deepseek.com/quick_start/pricing/)：Flash 谷时输入 / 缓存输入 / 输出分别为 $0.15 / $0.003 / $0.6，峰时为 $0.3 / $0.006 / $1.2；峰时为周一至周五 UTC 01:00–04:00、06:00–10:00，排除中国公休日。示例日历来自 [国务院 2026 年放假安排](https://www.beijing.gov.cn/cs/gncs/zcwj/202603/t20260327_4568275.html)。按供应商的 weekday 规则，调休上班的周末仍是谷时。价格和年度节假日日历都需管理员核对更新，不会自动抓取或保证供应商账单口径。
+
+“模型 Profiles”列表展示服务端计算的当前价格、时段和更新时间，每 5 秒刷新。调用在排队结束、准备发起供应商请求时冻结价格，按这份快照预留预算及结算；跨越峰谷边界的长响应不会按完成时价格追溯修改。每次重试重新定价。历史记录保留时段、计价时间、单价与缓存命中数；后续改价或重启不改变已结算费用。这是网关估算的时间锚点，官方账单如采用不同时间锚点，以供应商账单为准。
+
+缓存用量兼容 DeepSeek `prompt_cache_hit_tokens`、OpenAI `prompt_tokens_details.cached_tokens` 和 Responses `input_tokens_details.cached_tokens`。只有返回有效缓存用量且配置缓存单价时，才按“未缓存输入 × 输入价 + 缓存输入 × 缓存价 + 输出 × 输出价”结算。配置缓存价但供应商没有返回缓存用量时，按全部未缓存输入保守估算并标注“估算”。预算预留与成本路由不假设缓存一定命中。
+
+已测官方 Bifrost v2.2.4 的规范化响应不保留 DeepSeek 专有缓存字段。以 llmHub 实际收到的 usage 为准；字段缺失时绝不假装缓存用量已知，也不从请求内容猜测命中数，因此该版本下 DeepSeek 缓存费用会保守估算，而峰谷时段仍正确应用。`native.mjs` 会报告所测版本是否保留字段，并分别验证正常缓存计费与缺失时的保守估算。
+
+场景 `routing_policy` 默认是 `ordered`，保持配置順序。选择 `lowest_cost` 后，每次选路和排队结束都在该场景管理员已批准的候选 Profile 中比较当前预估费用；费用包含保守输入估计和各 Profile / 请求允许的输出上限，相同费用保留原顺序。排队期间赢家变化时释放原并发槽并进入新候选的 FIFO 队列，仍受请求总超时约束；限额统计保守记录已取得的队列准入。备用切换也按剩余候选的当前价格选择，不会重试已耗尽的候选。
+
+它不是质量或延迟自动评分。不同模型输出上限、能力和质量可能不同，管理员应先为场景选择能力满足业务需求的候选，再启用成本优先；业务调用仍只传 `scene/...`。不自动将请求推迟到谷时，没有新增异步持久化任务。
+
 ## 费用与限额规则
 
 - 月预算使用 UTC 自然月；0 表示不设硬预算。其他地方展示的时间按浏览器时区。
 - 文本 Token 预留为请求 JSON 字节数的两倍加固定开销，再加输出上限。该方法偏保守，可能提前排队或拒绝超大请求。它不是供应商 tokenizer，不能保证任意模型的 TPM 口径完全一致。
-- 供应商报告 usage 时按实际 Token 数和本次 Profile 单价结算；usage 缺失或连接异常时保留预估上限。成本是网关配置的价格计算值，不代替供应商账单；尚未单独区分缓存输入、推理 / 音频 / 内置搜索等特殊计费。
+- 供应商报告 usage 时按实际 Token 数和本次 Profile 价格快照结算；usage 缺失或连接异常时保留预估上限。成本是网关配置的价格计算值，不代替供应商账单；已支持缓存输入独立计费，尚未单独区分推理 / 音频 / 内置搜索等特殊计费。
 - 图片目前只支持 `n=1`；尺寸与质量由 Profile 固定，单张价格由管理员配置，记录为估算。不同尺寸 / 质量应建立不同 Profile / 场景。图片编辑、流式图片、音频和视频尚未接入。
 - 429 根据 `Retry-After` 冷却共享限额池，再进入队列；503 按退避重试或切换备用 Profile。网络断开可能已经产生供应商费用，因此不会自动重发。RPM / TPM 历史持久化，重启不会立即清空一分钟限额；等待中的请求不持久化。
 - 为保持计费边界明确，不接受绕过路由的 `provider`、`fallbacks`、`extra_body`、自带 provider key、服务端工具、媒体输入和有隐藏上下文的 `previous_response_id`。无状态工具调用与 JSON 输出可正常传递。
@@ -166,4 +188,4 @@ BIFROST_BINARY=/absolute/path/to/bifrost-http LLMHUB_BINARY=/tmp/llmhub-native n
 
 此脚本有 60 秒总时限，启动真实 Bifrost、llmHub 和本地模拟 OpenAI 服务，验证选钥、路由、普通 / SSE 调用与精确 usage 结算，退出时清理自己的服务与临时数据库。已在官方 v2.2.4 macOS arm64 二进制上通过，不能替代目标 Docker 环境或真实供应商联通验证。
 
-详细交付与环境限制见 `status.md`。初期范围不含异步持久化任务、优先级 / 公平调度、组织 / 环境维度、告警、智能路由、Prompt 版本管理、质量评估或多实例状态共享。
+详细交付与环境限制见 `status.md`。初期范围不含异步持久化任务、优先级 / 公平调度、组织 / 环境维度、告警、基于质量 / 延迟的智能路由、Prompt 版本管理、质量评估或多实例状态共享。

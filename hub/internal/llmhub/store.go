@@ -256,7 +256,7 @@ func (s *Store) Reserve(a Attempt, budget float64, reserve int64) error {
 
 func mathFloorMicros(v float64) float64 { return v * 1000000 }
 
-func (s *Store) Settle(id, status string, httpStatus int, input, output, cost, duration int64, estimated bool) error {
+func (s *Store) Settle(id, status string, httpStatus int, input, output, cost, duration int64, estimated bool, snapshots ...*Profile) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	tx, err := s.db.Begin()
@@ -284,6 +284,15 @@ func (s *Store) Settle(id, status string, httpStatus int, input, output, cost, d
 	_, err = tx.Exec("UPDATE attempts SET status=?,http_status=?,input_tokens=?,output_tokens=?,cost_micros=?,reserved_micros=0,estimated=?,duration_ms=? WHERE id=?", status, httpStatus, input, output, cost, estimated, duration, id)
 	if err != nil {
 		return err
+	}
+	if len(snapshots) > 0 && snapshots[0] != nil {
+		raw, err := json.Marshal(snapshots[0])
+		if err != nil {
+			return err
+		}
+		if _, err = tx.Exec("UPDATE attempt_prices SET profile=? WHERE attempt_id=?", string(raw), id); err != nil {
+			return err
+		}
 	}
 	return tx.Commit()
 }

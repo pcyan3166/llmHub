@@ -31,6 +31,7 @@ import {
 	authenticate,
 	errorMessage,
 	useConfigQuery,
+	usePricingQuery,
 	useOverviewQuery,
 	useKeysQuery,
 	useSaveMutation,
@@ -76,6 +77,12 @@ function App() {
 	const [selected, setSelected] = useState<Attempt>();
 	const [revoke, setRevoke] = useState<string>();
 	const configQuery = useConfigQuery(undefined, { skip: !token });
+	const pricingQuery = usePricingQuery(undefined, {
+		skip: !token || page !== "profiles",
+		pollingInterval: 5000,
+		skipPollingIfUnfocused: true,
+		refetchOnMountOrArgChange: true,
+	});
 	const overviewQuery = useOverviewQuery({ month, project }, { skip: !token, pollingInterval: 5000, skipPollingIfUnfocused: true });
 	const keysQuery = useKeysQuery(undefined, { skip: !token });
 	const [save, saveState] = useSaveMutation();
@@ -331,6 +338,7 @@ function App() {
 										configQuery.refetch();
 										overviewQuery.refetch();
 										keysQuery.refetch();
+										if (page === "profiles") pricingQuery.refetch();
 									}}
 									data-testid="hub-refresh"
 								>
@@ -536,7 +544,7 @@ function App() {
 													<th>场景</th>
 													<th>项目</th>
 													<th>接口</th>
-													<th>路由顺序</th>
+													<th>路由策略 / 候选</th>
 													<th>超时 / 重试</th>
 													<th />
 												</tr>
@@ -551,6 +559,7 @@ function App() {
 														<td>{s.project_id}</td>
 														<td className="mono">{s.endpoint}</td>
 														<td>
+															<small>{s.routing_policy === "lowest_cost" ? "当前预估成本优先" : "配置顺序优先"}</small>
 															{s.profiles.map((p, i) => (
 																<span className="route-step" key={p}>
 																	{i + 1}. {p}
@@ -574,59 +583,87 @@ function App() {
 									</div>
 								)}
 								{page === "profiles" && (
-									<div className="table-wrap">
-										<table>
-											<thead>
-												<tr>
-													<th>Profile</th>
-													<th>供应商 / 模型</th>
-													<th>密钥 / 限额池</th>
-													<th>输入 / 输出 USD / 1M</th>
-													<th>图片 USD / 张</th>
-													<th />
-												</tr>
-											</thead>
-											<tbody>
-												{config.profiles.map((p) => (
-													<tr key={p.id}>
-														<td>
-															<b>{p.id}</b>
-														</td>
-														<td>
-															{p.provider}
-															<small className="mono">{p.model}</small>
-														</td>
-														<td>
-															{p.key_name}
-															<small>{p.pool_id}</small>
-														</td>
-														<td>
-															{usd(p.input_usd_per_million)} / {usd(p.output_usd_per_million)}
-														</td>
-														<td>
-															{p.image_usd_per_image ? (
-																<>
-																	{usd(p.image_usd_per_image)}
-																	<small>
-																		{p.image_size} · {p.image_quality} · 估算
-																	</small>
-																</>
-															) : (
-																"—"
-															)}
-														</td>
-														<td>
-															<Actions
-																onEdit={() => setEditor({ entity: "profiles", row: { ...p } })}
-																onDelete={() => setRemoval({ entity: "profiles", id: p.id })}
-															/>
-														</td>
+									<section>
+										<div className="price-status" data-testid="hub-pricing-status">
+											{pricingQuery.isError ? (
+												<span className="error">当前价格读取失败</span>
+											) : pricingQuery.data ? (
+												<span>
+													当前价格 · {new Date(pricingQuery.data.at).toLocaleString()} <small>USD / 百万 Token</small>
+												</span>
+											) : (
+												<span>当前价格加载中</span>
+											)}
+										</div>
+										<div className="table-wrap">
+											<table>
+												<thead>
+													<tr>
+														<th>Profile</th>
+														<th>供应商 / 模型</th>
+														<th>密钥 / 限额池</th>
+														<th>当前输入 / 输出 USD / 1M</th>
+														<th>图片 USD / 张</th>
+														<th />
 													</tr>
-												))}
-											</tbody>
-										</table>
-										{!config.profiles.length && <Empty label="暂无 Profile" />}
-									</div>
+												</thead>
+												<tbody>
+													{config.profiles.map((p) => {
+														const effective = pricingQuery.isError ? undefined : pricingQuery.data?.profiles.find((v) => v.id === p.id);
+														return (
+															<tr key={p.id}>
+																<td>
+																	<b>{p.id}</b>
+																</td>
+																<td>
+																	{p.provider}
+																	<small className="mono">{p.model}</small>
+																</td>
+																<td>
+																	{p.key_name}
+																	<small>{p.pool_id}</small>
+																</td>
+																<td data-testid={`hub-current-price-${p.id}`}>
+																	{effective ? (
+																		<>
+																			{usd(effective.input_usd_per_million)} / {usd(effective.output_usd_per_million)}
+																			<small>
+																				{effective.applied_price?.label} · {effective.applied_price?.timezone}
+																			</small>
+																			{effective.cached_input_usd_per_million !== undefined && (
+																				<small>缓存输入 {usd(effective.cached_input_usd_per_million)}</small>
+																			)}
+																		</>
+																	) : (
+																		"待更新"
+																	)}
+																</td>
+																<td>
+																	{effective?.image_usd_per_image ? (
+																		<>
+																			{usd(effective.image_usd_per_image)}
+																			<small>
+																				{p.image_size} · {p.image_quality} · 估算
+																			</small>
+																		</>
+																	) : (
+																		"—"
+																	)}
+																</td>
+																<td>
+																	<Actions
+																		onEdit={() => setEditor({ entity: "profiles", row: { ...p } })}
+																		onDelete={() => setRemoval({ entity: "profiles", id: p.id })}
+																	/>
+																</td>
+															</tr>
+														);
+													})}
+												</tbody>
+											</table>
+											{!config.profiles.length && <Empty label="暂无 Profile" />}
+										</div>
+									</section>
 								)}
 								{page === "pools" && (
 									<div className="pool-list">
@@ -950,6 +987,22 @@ function App() {
 			{selected && (
 				<Modal title="请求详情" onClose={() => setSelected(undefined)}>
 					<dl className="request-detail">
+						{selected.price_snapshot?.applied_price && (
+							<>
+								<dt>计价时段</dt>
+								<dd>
+									{selected.price_snapshot.applied_price.label} / {selected.price_snapshot.applied_price.window_id}
+								</dd>
+								<dt>计价时间</dt>
+								<dd>{selected.price_snapshot.applied_price.priced_at}</dd>
+								<dt>缓存输入 Token</dt>
+								<dd>
+									{selected.price_snapshot.applied_price.cache_usage_known
+										? number(selected.price_snapshot.applied_price.cached_input_tokens)
+										: "未返回缓存用量"}
+								</dd>
+							</>
+						)}
 						{Object.entries(selected).map(([key, value]) => (
 							<React.Fragment key={key}>
 								<dt>{key}</dt>

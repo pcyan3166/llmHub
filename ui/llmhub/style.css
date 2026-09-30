@@ -597,6 +597,55 @@ pre {
 .form-grid .wide {
 	grid-column: 1 / -1;
 }
+.price-status {
+	font-size: 12px;
+	margin-bottom: 14px;
+	color: #56625b;
+}
+.pricing-editor {
+	border: 0;
+	border-top: 1px solid #dfe5e1;
+	margin: 24px 0 0;
+	padding: 16px 0 0;
+	min-width: 0;
+}
+.pricing-editor legend,
+.price-window legend {
+	font-size: 13px;
+	padding-right: 8px;
+}
+.pricing-editor > .form-grid {
+	margin-top: 20px;
+}
+.pricing-editor textarea {
+	resize: vertical;
+	width: 100%;
+	min-height: 72px;
+	border: 1px solid #dfe5e1;
+	border-radius: 5px;
+	padding: 10px;
+	font: inherit;
+}
+.price-window {
+	position: relative;
+	border: 0;
+	border-top: 1px solid #dfe5e1;
+	padding: 32px 0 20px;
+	margin: 20px 0;
+	min-width: 0;
+}
+.price-remove {
+	position: absolute;
+	right: 0;
+	top: 0;
+}
+.price-days {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 12px 16px;
+	margin-top: 20px;
+	font-size: 12px;
+}
 .route-editor {
 	display: grid;
 	grid-template-columns: repeat(2, minmax(0, 1fr));

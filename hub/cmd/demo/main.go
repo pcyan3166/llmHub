@@ -26,29 +26,26 @@ func main() {
 	listen := flag.String("listen", "127.0.0.1:8090", "loopback demo address")
 	ui := flag.String("ui", "../ui/llmhub/dist", "built UI directory")
 	seed := flag.String("seed", "../deploy/llmhub/seed.json", "sample configuration")
+	dbPath := flag.String("db", "", "optional persistent local-demo SQLite path")
 	flag.Parse()
 	if !strings.HasPrefix(*listen, "127.0.0.1:") {
 		log.Fatal("demo must listen on 127.0.0.1")
 	}
-	dir, err := os.MkdirTemp("", "llmhub-demo-")
-	if err != nil {
-		log.Fatal(err)
+	if *dbPath == "" {
+		dir, err := os.MkdirTemp("", "llmhub-demo-")
+		if err != nil {
+			log.Fatal(err)
+		}
+		defer os.RemoveAll(dir)
+		*dbPath = filepath.Join(dir, "demo.db")
 	}
-	defer os.RemoveAll(dir)
-	store, err := llmhub.OpenStore(filepath.Join(dir, "demo.db"))
+	store, err := llmhub.OpenStore(*dbPath)
 	if err != nil {
 		log.Fatal(err)
 	}
 	defer store.Close()
-	raw, err := os.ReadFile(*seed)
+	config, fresh, err := seedDemo(store, *seed)
 	if err != nil {
-		log.Fatal(err)
-	}
-	var config llmhub.Config
-	if err := json.Unmarshal(raw, &config); err != nil {
-		log.Fatal(err)
-	}
-	if _, err := store.SaveConfig(config, 1); err != nil {
 		log.Fatal(err)
 	}
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
@@ -65,16 +62,18 @@ func main() {
 	defer hub.Close()
 	hub.Demo = true
 	// Seed representative traffic through the complete gateway path.
-	for i, p := range config.Projects {
-		_, key, err := store.CreateKey(p.ID)
-		if err != nil {
-			log.Fatal(err)
-		}
-		for j := 0; j < 3+i; j++ {
-			body := `{"model":"scene/text.generate","messages":[{"role":"user","content":"local demonstration"}]}`
-			req, _ := http.NewRequest("POST", "http://demo/v1/chat/completions", strings.NewReader(body))
-			req.Header.Set("Authorization", "Bearer "+key)
-			hub.ServeHTTP(&discardWriter{header: http.Header{}}, req)
+	if fresh {
+		for i, p := range config.Projects {
+			_, key, err := store.CreateKey(p.ID)
+			if err != nil {
+				log.Fatal(err)
+			}
+			for j := 0; j < 3+i; j++ {
+				body := `{"model":"scene/text.generate","messages":[{"role":"user","content":"local demonstration"}]}`
+				req, _ := http.NewRequest("POST", "http://demo/v1/chat/completions", strings.NewReader(body))
+				req.Header.Set("Authorization", "Bearer "+key)
+				hub.ServeHTTP(&discardWriter{header: http.Header{}}, req)
+			}
 		}
 	}
 	server := &http.Server{Addr: *listen, Handler: hub, ReadHeaderTimeout: 5 * time.Second, IdleTimeout: 60 * time.Second}
@@ -92,6 +91,25 @@ func main() {
 	if err := server.Shutdown(shutdown); err != nil {
 		server.Close()
 	}
+}
+
+func seedDemo(store *llmhub.Store, seed string) (llmhub.Config, bool, error) {
+	config, version, err := store.Config()
+	if err != nil {
+		return config, false, err
+	}
+	if version != 1 || len(config.Projects) != 0 || len(config.Pools) != 0 {
+		return config, false, nil
+	}
+	raw, err := os.ReadFile(seed)
+	if err != nil {
+		return config, false, err
+	}
+	if err = json.Unmarshal(raw, &config); err != nil {
+		return config, false, err
+	}
+	_, err = store.SaveConfig(config, version)
+	return config, err == nil, err
 }
 
 type discardWriter struct{ header http.Header }

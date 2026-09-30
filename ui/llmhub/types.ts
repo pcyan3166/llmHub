@@ -1,4 +1,30 @@
 export type Project = { id: string; name: string; enabled: boolean; monthly_budget_usd: number };
+export type PriceWindow = {
+	id: string;
+	label: string;
+	days: number[];
+	start: string;
+	end: string;
+	input_usd_per_million: number;
+	output_usd_per_million: number;
+	cached_input_usd_per_million?: number;
+	image_usd_per_image?: number;
+};
+export type PriceSchedule = {
+	timezone: string;
+	calendar_timezone?: string;
+	default_label: string;
+	excluded_dates?: string[];
+	windows: PriceWindow[];
+};
+export type AppliedPrice = {
+	label: string;
+	window_id: string;
+	timezone: string;
+	priced_at: string;
+	cached_input_tokens: number;
+	cache_usage_known: boolean;
+};
 export type Profile = {
 	id: string;
 	provider: string;
@@ -8,6 +34,9 @@ export type Profile = {
 	max_output_tokens: number;
 	input_usd_per_million: number;
 	output_usd_per_million: number;
+	cached_input_usd_per_million?: number;
+	pricing?: PriceSchedule;
+	applied_price?: AppliedPrice;
 	image_usd_per_image?: number;
 	image_size?: string;
 	image_quality?: string;
@@ -21,7 +50,9 @@ export type Scene = {
 	queue_timeout_seconds: number;
 	timeout_seconds: number;
 	retries: number;
+	routing_policy?: "ordered" | "lowest_cost";
 };
+export type PricingResponse = { at: string; profiles: Profile[] };
 export type Pool = { id: string; concurrency: number; queue_size: number; rpm: number; tpm: number };
 export type Config = { projects: Project[]; profiles: Profile[]; scenes: Scene[]; pools: Pool[] };
 export type Entity = "projects" | "profiles" | "scenes" | "pools";

@@ -8,6 +8,10 @@ const { chromium } = require(process.env.LLMHUB_PLAYWRIGHT_MODULE || "playwright
 const url = process.env.LLMHUB_TEST_URL || "http://127.0.0.1:8090";
 const admin = process.env.LLMHUB_TEST_ADMIN || "llmhub-local-demo-admin-token";
 const output = path.resolve("test-results/llmhub");
+const pricingID = `qa-pricing-${Date.now()}`;
+const sceneID = `qa-route-${Date.now()}`;
+const projectID = `qa-project-${Date.now()}`;
+const headers = { Authorization: `Bearer ${admin}` };
 await mkdir(output, { recursive: true });
 const browser = await chromium.launch({ headless: true });
 const watchdog = setTimeout(() => { console.error("llmHub browser QA exceeded 90 seconds"); process.exit(1); }, 90000);
@@ -33,7 +37,7 @@ try {
   }
   await page.getByTestId("hub-nav-projects").click();
   await page.getByTestId("hub-create").click();
-  const id = `qa-${Date.now()}`;
+  const id = projectID;
   await page.getByTestId("hub-field-id").fill(id);
   await page.getByTestId("hub-field-name").fill("QA Project");
   await page.getByTestId("hub-field-monthly_budget_usd").fill("25");
@@ -45,10 +49,72 @@ try {
   await page.getByTestId("hub-field-name").fill("QA Project Updated");
   await page.getByTestId("hub-editor-save").click();
   await page.locator("dialog").waitFor({ state: "hidden" });
+  await row.getByText("QA Project Updated", { exact: true }).waitFor();
   assert.match(await row.innerText(), /QA Project Updated/);
   await row.getByTestId("hub-delete").click();
   await page.getByTestId("hub-delete-confirm").click();
   await row.waitFor({ state: "hidden" });
+  await page.getByTestId("hub-nav-profiles").click();
+  const configResponse = await page.request.get(`${url}/api/llmhub/config`, { headers });
+  const existing = (await configResponse.json()).config;
+  await page.getByTestId("hub-create").click();
+  await page.getByTestId("hub-field-id").fill(pricingID);
+  await page.getByTestId("hub-field-model").fill("mock-tariff-model");
+  await page.getByTestId("hub-field-pool_id").selectOption(existing.pools[0].id);
+  await page.getByTestId("hub-field-input_usd_per_million").fill("0.15");
+  await page.getByTestId("hub-field-output_usd_per_million").fill("0.6");
+  await page.getByTestId("hub-field-cached_input_usd_per_million").fill("0.003");
+  await page.getByTestId("hub-pricing-enabled").check();
+  await page.getByTestId("hub-pricing-calendar-timezone").fill("UTC");
+  await page.getByTestId("hub-pricing-add").click();
+  await page.getByTestId("hub-pricing-label-0").fill("QA Peak");
+  await page.getByTestId("hub-pricing-start-0").fill("00:00");
+  await page.getByTestId("hub-pricing-end-0").fill("24:00");
+  await page.getByTestId("hub-pricing-input-0").fill("0.3");
+  await page.getByTestId("hub-pricing-output-0").fill("1.2");
+  await page.getByTestId("hub-pricing-cached-0").fill("0.006");
+  await page.getByTestId("hub-pricing-day-0-6").check();
+  await page.getByTestId("hub-pricing-day-0-7").check();
+  await page.getByTestId("hub-pricing-add").click();
+  await page.getByTestId("hub-editor-save").click();
+  await page.getByRole("alert").filter({ hasText: "价格时段不能重叠" }).waitFor();
+  await page.getByTestId("hub-pricing-remove-1").click();
+  await page.getByTestId("hub-editor-save").click();
+  await page.locator("dialog").waitFor({ state: "hidden" });
+  const pricingRow = page.getByRole("row").filter({ hasText: pricingID });
+  await page.getByTestId(`hub-current-price-${pricingID}`).filter({ hasText: "QA Peak" }).waitFor();
+  assert.match(await page.getByTestId(`hub-current-price-${pricingID}`).innerText(), /\$0\.30.*\$1\.20/);
+  await page.screenshot({ path: path.join(output, "desktop-profiles-pricing.png") });
+  const effectiveResponse = await page.request.get(`${url}/api/llmhub/pricing`, { headers });
+  const effective = await effectiveResponse.json();
+  assert.equal(effective.profiles.find((p) => p.id === pricingID).cached_input_usd_per_million, 0.006);
+  const refreshed = page.waitForResponse((r) => r.url() === `${url}/api/llmhub/pricing` && r.status() === 200);
+  await page.getByTestId("hub-refresh").click();
+  await refreshed;
+  await pricingRow.getByTestId("hub-edit").click();
+  assert.equal(await page.getByTestId("hub-pricing-cached-0").inputValue(), "0.006");
+  await page.getByTestId("hub-pricing-excluded-dates").fill(effective.at.slice(0, 10));
+  await page.getByTestId("hub-editor-save").click();
+  await page.locator("dialog").waitFor({ state: "hidden" });
+  await page.getByTestId(`hub-current-price-${pricingID}`).filter({ hasText: "谷时" }).waitFor();
+  assert.match(await page.getByTestId(`hub-current-price-${pricingID}`).innerText(), /\$0\.15.*\$0\.60/);
+  await page.getByTestId("hub-nav-scenes").click();
+  await page.getByTestId("hub-create").click();
+  await page.getByTestId("hub-field-id").fill(sceneID);
+  await page.getByTestId("hub-field-name").fill("QA Cost Route");
+  await page.getByTestId("hub-field-project_id").selectOption("storepilot");
+  await page.getByTestId(`hub-route-${pricingID}`).check();
+  await page.getByTestId("hub-field-routing_policy").selectOption("lowest_cost");
+  await page.getByTestId("hub-editor-save").click();
+  await page.locator("dialog").waitFor({ state: "hidden" });
+  const sceneRow = page.getByRole("row").filter({ hasText: sceneID });
+  assert.match(await sceneRow.innerText(), /当前预估成本优先/);
+  await sceneRow.getByTestId("hub-edit").click();
+  assert.equal(await page.getByTestId("hub-field-routing_policy").inputValue(), "lowest_cost");
+  await page.getByRole("button", { name: "取消", exact: true }).click();
+  await sceneRow.getByTestId("hub-delete").click();
+  await page.getByTestId("hub-delete-confirm").click();
+  await sceneRow.waitFor({ state: "hidden" });
   await page.getByTestId("hub-nav-keys").click();
   await page.getByTestId("hub-key-project").selectOption("storepilot");
   await page.getByTestId("hub-key-create").click();
@@ -77,6 +143,32 @@ try {
   await page.screenshot({ path: path.join(output, "mobile-editor.png") });
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth + 1), false, "mobile editor overflow");
   await page.getByRole("button", { name: "取消", exact: true }).click();
+  await page.getByTitle("菜单", { exact: true }).click();
+  await page.getByTestId("hub-nav-profiles").click();
+  await pricingRow.getByTestId("hub-edit").click();
+  await page.getByTestId("hub-pricing-add").click();
+  await page.getByTestId("hub-pricing-window-1").scrollIntoViewIfNeeded();
+  await page.screenshot({ path: path.join(output, "mobile-pricing-editor.png") });
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth + 1), false, "mobile pricing editor overflow");
+  const overflow = await page.locator("dialog").evaluate((el) => el.scrollWidth > el.clientWidth + 1);
+  assert.equal(overflow, false, "mobile pricing dialog overflow");
+  await page.getByRole("button", { name: "取消", exact: true }).click();
+  await pricingRow.getByTestId("hub-delete").click();
+  await page.getByTestId("hub-delete-confirm").click();
+  await pricingRow.waitFor({ state: "hidden" });
   assert.deepEqual(errors, [], "uncaught browser errors");
-  console.log("PASS: login recovery, nine views, project CRUD, key issuance/revocation, image, SSE, desktop/mobile layout; screenshots in test-results/llmhub");
-} finally { clearTimeout(watchdog); await browser.close(); }
+  console.log("PASS: login recovery, nine views, CRUD, time pricing/current rates/cache/holiday/overlap validation, cost routing, key issuance/revocation, image, SSE, desktop/mobile layout; screenshots in test-results/llmhub");
+} finally {
+  clearTimeout(watchdog);
+  await browser.close();
+  // Remove only this run's fixtures, retaining any unrelated or concurrent edits.
+  const response = await fetch(`${url}/api/llmhub/config`, { headers, signal: AbortSignal.timeout(5000) });
+  if (response.ok) {
+    const { config, version } = await response.json();
+    const next = { ...config, projects: config.projects.filter((p) => p.id !== projectID), profiles: config.profiles.filter((p) => p.id !== pricingID), scenes: config.scenes.filter((s) => s.id !== sceneID) };
+    if (next.projects.length !== config.projects.length || next.profiles.length !== config.profiles.length || next.scenes.length !== config.scenes.length) {
+      const cleaned = await fetch(`${url}/api/llmhub/config`, { method: "PUT", headers: { ...headers, "Content-Type": "application/json" }, body: JSON.stringify({ config: next, version }), signal: AbortSignal.timeout(5000) });
+      assert.equal(cleaned.status, 200, "QA fixture cleanup failed; unrelated configuration was not overwritten");
+    }
+  }
+}

@@ -72,6 +72,37 @@ func TestStoreCrashRecoveryAndSingleInstance(t *testing.T) {
 	}
 }
 
+func TestPriceSnapshotAndCacheBreakdownSurviveRestart(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "hub.db")
+	s, err := OpenStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := tariffProfile().priceAt(instant("2026-09-28T02:00:00Z"))
+	if err := s.Reserve(Attempt{ID: "priced", ProjectID: "p", ProfileID: p.ID, PriceSnapshot: &p}, 1, 1000); err != nil {
+		t.Fatal(err)
+	}
+	p.AppliedPrice.CachedInputTokens, p.AppliedPrice.CacheUsageKnown = 50, true
+	if err := s.Settle("priced", "success", 200, 100, 20, 190, 1, false, &p); err != nil {
+		t.Fatal(err)
+	}
+	// A repeated settlement must not replace the original tariff or cached count.
+	different := tariffProfile().priceAt(instant("2026-09-28T04:00:00Z"))
+	if err := s.Settle("priced", "success", 200, 100, 20, 140, 1, false, &different); err != nil {
+		t.Fatal(err)
+	}
+	s.Close()
+	s, err = OpenStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	rows, err := s.Recent("p", 1)
+	if err != nil || len(rows) != 1 || rows[0].CostUSD != 0.00019 || rows[0].PriceSnapshot.AppliedPrice.WindowID != "morning" || rows[0].PriceSnapshot.AppliedPrice.CachedInputTokens != 50 {
+		t.Fatalf("historical tariff lost: %+v %v", rows, err)
+	}
+}
+
 func TestRetentionDoesNotResetBudget(t *testing.T) {
 	s := testStore(t)
 	if err := s.Reserve(Attempt{ID: "old", ProjectID: "p"}, 1, 100); err != nil {

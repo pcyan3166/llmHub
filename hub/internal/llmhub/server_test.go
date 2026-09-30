@@ -2,6 +2,7 @@ package llmhub
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -10,6 +11,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 )
 
 const testAdmin = "test-admin-token-at-least-24-characters"
@@ -20,6 +22,188 @@ func testConfig() Config {
 		Pools:    []Pool{{ID: "shared", Concurrency: 1, QueueSize: 4, RPM: 100, TPM: 100000}},
 		Profiles: []Profile{{ID: "text-fast", Provider: "openai", Model: "test-model", KeyName: "primary", PoolID: "shared", MaxOutputTokens: 32, InputUSDPerMillion: 1, OutputUSDPerMillion: 2}},
 		Scenes:   []Scene{{ID: "copy", ProjectID: "storepilot", Name: "Copy", Profiles: []string{"text-fast"}, Endpoint: "/v1/chat/completions", TimeoutSeconds: 3, QueueTimeoutSeconds: 2}},
+	}
+}
+
+func TestDispatchPriceSnapshotSurvivesStreamBoundary(t *testing.T) {
+	var clock atomic.Int64
+	clock.Store(instant("2026-09-28T03:59:59Z").UnixNano())
+	server, store, token := testServer(t, func(w http.ResponseWriter, r *http.Request) {
+		clock.Store(instant("2026-09-28T04:00:01Z").UnixNano())
+		w.Header().Set("Content-Type", "text/event-stream")
+		io.WriteString(w, "data: {\"usage\":{\"prompt_tokens\":100,\"completion_tokens\":20,\"prompt_cache_hit_tokens\":50}}\n\ndata: [DONE]\n\n")
+	})
+	server.now = func() time.Time { return time.Unix(0, clock.Load()) }
+	c := server.snapshot()
+	c.Profiles[0] = tariffProfile()
+	b, _ := json.Marshal(map[string]any{"config": c, "version": 2})
+	if w := call(server, "PUT", "/api/llmhub/config", testAdmin, string(b)); w.Code != 200 {
+		t.Fatal(w.Body.String())
+	}
+	w := call(server, "POST", "/v1/chat/completions", token, `{"model":"copy","messages":[{"role":"user","content":"hello"}],"stream":true}`)
+	if w.Code != 200 || w.Header().Get("X-LLMHub-Price-Window") != "morning" {
+		t.Fatal(w.Code, w.Body.String())
+	}
+	recent, err := store.Recent("storepilot", 10)
+	if err != nil || len(recent) != 1 {
+		t.Fatal(err)
+	}
+	a := recent[0]
+	if a.Estimated || a.CostUSD != 0.00019 || a.PriceSnapshot.AppliedPrice.WindowID != "morning" || a.PriceSnapshot.AppliedPrice.CachedInputTokens != 50 {
+		t.Fatalf("snapshot changed across stream boundary: %+v", a)
+	}
+	config, _, _ := store.Config()
+	if config.Profiles[0].AppliedPrice != nil || config.Profiles[0].Pricing == nil {
+		t.Fatal("persistent config was mutated")
+	}
+	if w := call(server, "GET", "/api/llmhub/pricing", testAdmin, ""); w.Code != 200 || !strings.Contains(w.Body.String(), "Off peak") {
+		t.Fatal(w.Body.String())
+	}
+}
+
+func TestQueuedAttemptRepricesAndReroutesBeforeDispatch(t *testing.T) {
+	for _, policy := range []string{"ordered", "lowest_cost"} {
+		t.Run(policy, func(t *testing.T) {
+			var clock atomic.Int64
+			clock.Store(instant("2026-09-28T00:59:59Z").UnixNano())
+			server, store, token := testServer(t, func(w http.ResponseWriter, r *http.Request) {
+				io.WriteString(w, `{"usage":{"prompt_tokens":100,"completion_tokens":20,"prompt_cache_hit_tokens":0}}`)
+			})
+			server.now = func() time.Time { return time.Unix(0, clock.Load()) }
+			c := server.snapshot()
+			c.Profiles[0] = tariffProfile()
+			p := c.Profiles[0]
+			p.ID, p.Pricing, p.PoolID = "alternate", nil, "alternate"
+			p.InputUSDPerMillion, p.OutputUSDPerMillion = 1.5, 3
+			c.Profiles = append(c.Profiles, p)
+			c.Pools = append(c.Pools, Pool{ID: "alternate", Concurrency: 1, QueueSize: 4})
+			c.Scenes[0].Profiles, c.Scenes[0].RoutingPolicy = []string{"text-fast", "alternate"}, policy
+			b, _ := json.Marshal(map[string]any{"config": c, "version": 2})
+			if w := call(server, "PUT", "/api/llmhub/config", testAdmin, string(b)); w.Code != 200 {
+				t.Fatal(w.Body.String())
+			}
+			hold, err := server.scheduler.Acquire(context.Background(), "shared", "hold", 1)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer hold.Finish(0)
+			completed := make(chan *httptest.ResponseRecorder, 1)
+			go func() {
+				completed <- call(server, "POST", "/v1/chat/completions", token, `{"model":"copy","messages":[{"role":"user","content":"hello"}]}`)
+			}()
+			deadline := time.Now().Add(time.Second)
+			queued := false
+			for time.Now().Before(deadline) {
+				for _, stat := range server.scheduler.Stats() {
+					if stat.ID == "shared" && stat.Queued == 1 {
+						queued = true
+					}
+				}
+				if queued {
+					break
+				}
+				time.Sleep(time.Millisecond)
+			}
+			if !queued {
+				t.Fatal("request did not enter queue")
+			}
+			clock.Store(instant("2026-09-28T01:00:00Z").UnixNano())
+			hold.Finish(0)
+			select {
+			case w := <-completed:
+				wantID, wantWindow, wantCost := "text-fast", "morning", 0.00028
+				if policy == "lowest_cost" {
+					wantID, wantWindow, wantCost = "alternate", "default", 0.00021
+				}
+				if w.Code != 200 || w.Header().Get("X-LLMHub-Profile") != wantID || w.Header().Get("X-LLMHub-Price-Window") != wantWindow {
+					t.Fatal(w.Code, w.Header(), w.Body.String())
+				}
+				rows, _ := store.Recent("", 10)
+				if len(rows) != 1 || rows[0].CostUSD != wantCost || rows[0].PriceSnapshot.AppliedPrice.PricedAt != instant("2026-09-28T01:00:00Z") {
+					t.Fatalf("wrong admission snapshot: %+v", rows)
+				}
+			case <-time.After(4 * time.Second):
+				t.Fatal("queued request never completed")
+			}
+		})
+	}
+}
+
+func TestMissingCacheUsageIsConservativeAndPeakBudgetApplies(t *testing.T) {
+	var calls atomic.Int32
+	server, store, token := testServer(t, func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		io.WriteString(w, `{"usage":{"prompt_tokens":100,"completion_tokens":20}}`)
+	})
+	server.now = func() time.Time { return instant("2026-09-28T02:00:00Z") }
+	c := server.snapshot()
+	c.Profiles[0] = tariffProfile()
+	b, _ := json.Marshal(map[string]any{"config": c, "version": 2})
+	if w := call(server, "PUT", "/api/llmhub/config", testAdmin, string(b)); w.Code != 200 {
+		t.Fatal(w.Body.String())
+	}
+	body := `{"model":"copy","messages":[{"role":"user","content":"hello"}]}`
+	if w := call(server, "POST", "/v1/chat/completions", token, body); w.Code != 200 {
+		t.Fatal(w.Body.String())
+	}
+	rows, _ := store.Recent("", 1)
+	if !rows[0].Estimated || rows[0].CostUSD != 0.00028 || rows[0].PriceSnapshot.AppliedPrice.CacheUsageKnown {
+		t.Fatalf("cache miss upper estimate required: %+v", rows[0])
+	}
+	c.Projects[0].MonthlyBudgetUSD = 0.000281
+	b, _ = json.Marshal(map[string]any{"config": c, "version": 3})
+	if w := call(server, "PUT", "/api/llmhub/config", testAdmin, string(b)); w.Code != 200 {
+		t.Fatal(w.Body.String())
+	}
+	if w := call(server, "POST", "/v1/chat/completions", token, body); w.Code != 402 || calls.Load() != 1 {
+		t.Fatal("peak reservation bypassed budget")
+	}
+	if w := call(server, "GET", "/api/llmhub/pricing", token, ""); w.Code != 401 {
+		t.Fatal("project key accessed admin pricing")
+	}
+}
+
+func TestCostReroutingCannotResetRetryLimits(t *testing.T) {
+	var clock atomic.Int64
+	var primaryCalls, alternateCalls atomic.Int32
+	clock.Store(instant("2026-09-28T00:59:59Z").UnixNano())
+	server, store, token := testServer(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("X-BF-API-Key") == "alternate" {
+			alternateCalls.Add(1)
+			clock.Store(instant("2026-09-28T00:59:59Z").UnixNano())
+		} else {
+			primaryCalls.Add(1)
+			clock.Store(instant("2026-09-28T02:00:00Z").UnixNano())
+		}
+		w.WriteHeader(503)
+		io.WriteString(w, `{}`)
+	})
+	server.now = func() time.Time { return time.Unix(0, clock.Load()) }
+	c := server.snapshot()
+	c.Profiles[0] = tariffProfile()
+	p := c.Profiles[0]
+	p.ID, p.Pricing, p.PoolID, p.KeyName = "alternate", nil, "alternate", "alternate"
+	p.InputUSDPerMillion, p.OutputUSDPerMillion = 1.5, 3
+	c.Profiles = append(c.Profiles, p)
+	c.Pools = append(c.Pools, Pool{ID: "alternate", Concurrency: 1, QueueSize: 4})
+	c.Scenes[0].Profiles, c.Scenes[0].RoutingPolicy = []string{"text-fast", "alternate"}, "lowest_cost"
+	c.Scenes[0].Retries, c.Scenes[0].TimeoutSeconds, c.Scenes[0].QueueTimeoutSeconds = 1, 10, 5
+	b, _ := json.Marshal(map[string]any{"config": c, "version": 2})
+	if w := call(server, "PUT", "/api/llmhub/config", testAdmin, string(b)); w.Code != 200 {
+		t.Fatal(w.Body.String())
+	}
+	w := call(server, "POST", "/v1/chat/completions", token, `{"model":"copy","messages":[{"role":"user","content":"hello"}]}`)
+	if w.Code != 503 || primaryCalls.Load() != 2 || alternateCalls.Load() != 2 {
+		t.Fatalf("price changes reset attempt limits: HTTP %d, primary=%d alternate=%d", w.Code, primaryCalls.Load(), alternateCalls.Load())
+	}
+	rows, _ := store.Recent("", 10)
+	if len(rows) != 4 {
+		t.Fatal("missing retry records")
+	}
+	for _, stat := range server.scheduler.Stats() {
+		if stat.Active != 0 {
+			t.Fatal("rerouting leaked lease")
+		}
 	}
 }
 

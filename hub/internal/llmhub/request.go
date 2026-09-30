@@ -192,19 +192,28 @@ func textOnly(body map[string]json.RawMessage, endpoint string) error {
 }
 
 type tokenUsage struct {
-	input  int64
-	output int64
-	known  bool
+	input       int64
+	output      int64
+	known       bool
+	cached      int64
+	cachedKnown bool
 }
 
 func parseUsage(raw []byte) tokenUsage {
 	var payload struct {
 		Usage *struct {
-			Prompt     *int64 `json:"prompt_tokens"`
-			Completion *int64 `json:"completion_tokens"`
-			Input      *int64 `json:"input_tokens"`
-			Output     *int64 `json:"output_tokens"`
-			Total      *int64 `json:"total_tokens"`
+			Prompt        *int64 `json:"prompt_tokens"`
+			Completion    *int64 `json:"completion_tokens"`
+			Input         *int64 `json:"input_tokens"`
+			Output        *int64 `json:"output_tokens"`
+			Total         *int64 `json:"total_tokens"`
+			CacheHit      *int64 `json:"prompt_cache_hit_tokens"`
+			PromptDetails *struct {
+				Cached *int64 `json:"cached_tokens"`
+			} `json:"prompt_tokens_details"`
+			InputDetails *struct {
+				Cached *int64 `json:"cached_tokens"`
+			} `json:"input_tokens_details"`
 		} `json:"usage"`
 		Response json.RawMessage `json:"response"`
 	}
@@ -235,6 +244,17 @@ func parseUsage(raw []byte) tokenUsage {
 	}
 	if result.input < 0 || result.output < 0 || result.input > 1000000000 || result.output > 1000000000 {
 		return tokenUsage{}
+	}
+	cached := u.CacheHit
+	if cached == nil && u.PromptDetails != nil {
+		cached = u.PromptDetails.Cached
+	}
+	if cached == nil && u.InputDetails != nil {
+		cached = u.InputDetails.Cached
+	}
+	if cached != nil && *cached >= 0 && *cached <= result.input {
+		result.cached = *cached
+		result.cachedKnown = true
 	}
 	return result
 }

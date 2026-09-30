@@ -33,6 +33,7 @@ type Server struct {
 	admission chan struct{}
 	staticDir string
 	logger    *slog.Logger
+	now       func() time.Time
 }
 
 func NewServer(store *Store, upstream, adminToken, staticDir string) (*Server, error) {
@@ -56,7 +57,7 @@ func NewServer(store *Store, upstream, adminToken, staticDir string) (*Server, e
 	}
 	transport := &http.Transport{Proxy: http.ProxyFromEnvironment, MaxIdleConns: 64, MaxIdleConnsPerHost: 32, MaxConnsPerHost: 256, IdleConnTimeout: 60 * time.Second, ResponseHeaderTimeout: 90 * time.Second}
 	client := &http.Client{Transport: transport, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
-	return &Server{store: store, scheduler: scheduler, client: client, upstream: u, adminHash: sha256.Sum256([]byte(adminToken)), config: c, version: version, admission: make(chan struct{}, 128), staticDir: staticDir, logger: slog.Default()}, nil
+	return &Server{store: store, scheduler: scheduler, client: client, upstream: u, adminHash: sha256.Sum256([]byte(adminToken)), config: c, version: version, admission: make(chan struct{}, 128), staticDir: staticDir, logger: slog.Default(), now: time.Now}, nil
 }
 
 func (s *Server) Close() { s.scheduler.Close(); s.client.CloseIdleConnections() }
@@ -192,6 +193,13 @@ func (s *Server) admin(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		writeJSON(w, 200, map[string]any{"keys": keys})
+	case r.URL.Path == "/api/llmhub/pricing" && r.Method == "GET":
+		at := s.now()
+		profiles := []Profile{}
+		for _, p := range s.snapshot().Profiles {
+			profiles = append(profiles, p.priceAt(at))
+		}
+		writeJSON(w, 200, map[string]any{"at": at.UTC(), "profiles": profiles})
 	case r.URL.Path == "/api/llmhub/keys" && r.Method == "POST":
 		var body struct {
 			ProjectID string `json:"project_id"`
@@ -315,14 +323,18 @@ func (s *Server) inference(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 	requestID := randomID("req_")
 	w.Header().Set("X-Request-ID", requestID)
-	for _, profileID := range scene.Profiles {
+	remaining := append([]string(nil), scene.Profiles...)
+	attemptsUsed := make(map[string]int, len(remaining))
+	for len(remaining) > 0 {
+		profileID := cheapestRoute(c, scene, remaining, raw, s.now())
 		profile := c.Profile(profileID)
+		reroute := false
 		body, input, output, stream, err := prepareRequest(raw, scene.Endpoint, profile)
 		if err != nil {
 			writeError(w, 400, "invalid_request", err.Error())
 			return
 		}
-		for retry := 0; retry <= scene.Retries; retry++ {
+		for retry := attemptsUsed[profileID]; retry <= scene.Retries; retry++ {
 			if ctx.Err() != nil {
 				writeError(w, 504, "request_timeout", "request deadline exceeded")
 				return
@@ -350,6 +362,13 @@ func (s *Server) inference(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			queueMS := time.Since(queuedAt).Milliseconds()
+			pricedAt := s.now()
+			if cheapestRoute(c, scene, remaining, raw, pricedAt) != profileID {
+				lease.Finish(0)
+				reroute = true
+				break
+			}
+			profile = c.Profile(profileID).priceAt(pricedAt)
 			attempt := Attempt{ID: attemptID, RequestID: requestID, ProjectID: projectID, SceneID: scene.ID, ProfileID: profile.ID, PoolID: profile.PoolID, Provider: profile.Provider, Model: profile.Model, InputTokens: input, OutputTokens: output, QueueMS: queueMS, PriceSnapshot: &profile}
 			reserve := costMicros(profile, input, output)
 			// Recheck the project after waiting so disabling it immediately stops queued traffic.
@@ -374,6 +393,7 @@ func (s *Server) inference(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			startedAt := time.Now()
+			attemptsUsed[profileID]++
 			req, _ := http.NewRequestWithContext(ctx, "POST", strings.TrimRight(s.upstream.String(), "/")+"/openai"+scene.Endpoint, bytes.NewReader(body))
 			req.Header.Set("Content-Type", "application/json")
 			req.Header.Set("X-BF-API-Key", profile.KeyName)
@@ -391,7 +411,7 @@ func (s *Server) inference(w http.ResponseWriter, r *http.Request) {
 				s.scheduler.Cooldown(profile.PoolID, until)
 			}
 			if resp.StatusCode == 429 || resp.StatusCode == 503 {
-				if retry < scene.Retries || profileID != scene.Profiles[len(scene.Profiles)-1] {
+				if retry < scene.Retries || len(remaining) > 1 {
 					_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<20))
 					resp.Body.Close()
 					lease.Finish(input + output)
@@ -405,6 +425,7 @@ func (s *Server) inference(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("X-LLMHub-Profile", profile.ID)
 			w.Header().Set("X-LLMHub-Model", profile.Provider+"/"+profile.Model)
 			w.Header().Set("X-LLMHub-Queue-MS", strconv.FormatInt(queueMS, 10))
+			w.Header().Set("X-LLMHub-Price-Window", profile.AppliedPrice.WindowID)
 			if stream && resp.StatusCode >= 200 && resp.StatusCode < 300 && strings.Contains(resp.Header.Get("Content-Type"), "text/event-stream") {
 				s.stream(w, resp, lease, attemptID, profile, input, output, reserve, startedAt)
 				return
@@ -418,10 +439,12 @@ func (s *Server) inference(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			usage := parseUsage(responseRaw)
-			estimated := !usage.known
+			estimated := !usage.known || profile.CachedInputUSDPerMillion != nil && !usage.cachedKnown
 			if usage.known {
 				input, output = usage.input, usage.output
-				reserve = costMicros(profile, input, output)
+				reserve = usageCostMicros(profile, usage)
+				profile.AppliedPrice.CachedInputTokens = usage.cached
+				profile.AppliedPrice.CacheUsageKnown = usage.cachedKnown
 			} else if resp.StatusCode >= 400 {
 				input, output, reserve = 0, 0, 0
 			}
@@ -439,7 +462,7 @@ func (s *Server) inference(w http.ResponseWriter, r *http.Request) {
 			if resp.StatusCode >= 400 {
 				status = "error"
 			}
-			s.settle(attemptID, status, resp.StatusCode, input, output, reserve, startedAt, estimated)
+			s.settle(attemptID, status, resp.StatusCode, input, output, reserve, startedAt, estimated, &profile)
 			if ct := resp.Header.Get("Content-Type"); ct != "" {
 				w.Header().Set("Content-Type", ct)
 			} else {
@@ -452,12 +475,20 @@ func (s *Server) inference(w http.ResponseWriter, r *http.Request) {
 			_, _ = w.Write(responseRaw)
 			return
 		}
+		if !reroute {
+			for i, id := range remaining {
+				if id == profileID {
+					remaining = append(remaining[:i], remaining[i+1:]...)
+					break
+				}
+			}
+		}
 	}
 	writeError(w, 503, "routes_exhausted", "all scene profiles are unavailable")
 }
 
-func (s *Server) settle(id, status string, httpStatus int, input, output, cost int64, started time.Time, estimated bool) {
-	if err := s.store.Settle(id, status, httpStatus, input, output, cost, time.Since(started).Milliseconds(), estimated); err != nil {
+func (s *Server) settle(id, status string, httpStatus int, input, output, cost int64, started time.Time, estimated bool, snapshots ...*Profile) {
+	if err := s.store.Settle(id, status, httpStatus, input, output, cost, time.Since(started).Milliseconds(), estimated, snapshots...); err != nil {
 		s.logger.Error("usage settlement failed; reservation retained", "attempt_id", id, "error", err)
 	}
 }
@@ -497,13 +528,15 @@ func (s *Server) stream(w http.ResponseWriter, resp *http.Response, lease *Lease
 	if status == "success" && (!tracker.terminal || tracker.failed) {
 		status = "stream_error"
 	}
-	estimated := !tracker.usage.known || status != "success"
-	if !estimated {
+	estimated := !tracker.usage.known || status != "success" || p.CachedInputUSDPerMillion != nil && !tracker.usage.cachedKnown
+	if tracker.usage.known && status == "success" {
 		input, output = tracker.usage.input, tracker.usage.output
-		reserve = costMicros(p, input, output)
+		reserve = usageCostMicros(p, tracker.usage)
+		p.AppliedPrice.CachedInputTokens = tracker.usage.cached
+		p.AppliedPrice.CacheUsageKnown = tracker.usage.cachedKnown
 	}
 	lease.Finish(input + output)
-	s.settle(id, status, resp.StatusCode, input, output, reserve, started, estimated)
+	s.settle(id, status, resp.StatusCode, input, output, reserve, started, estimated, &p)
 }
 
 func retryAfter(value string, now time.Time, retry int) time.Time {

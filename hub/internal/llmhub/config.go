@@ -22,17 +22,20 @@ type Project struct {
 }
 
 type Profile struct {
-	ID                  string  `json:"id"`
-	Provider            string  `json:"provider"`
-	Model               string  `json:"model"`
-	KeyName             string  `json:"key_name"`
-	PoolID              string  `json:"pool_id"`
-	MaxOutputTokens     int64   `json:"max_output_tokens"`
-	InputUSDPerMillion  float64 `json:"input_usd_per_million"`
-	OutputUSDPerMillion float64 `json:"output_usd_per_million"`
-	ImageUSDPerImage    float64 `json:"image_usd_per_image,omitempty"`
-	ImageSize           string  `json:"image_size,omitempty"`
-	ImageQuality        string  `json:"image_quality,omitempty"`
+	ID                       string         `json:"id"`
+	Provider                 string         `json:"provider"`
+	Model                    string         `json:"model"`
+	KeyName                  string         `json:"key_name"`
+	PoolID                   string         `json:"pool_id"`
+	MaxOutputTokens          int64          `json:"max_output_tokens"`
+	InputUSDPerMillion       float64        `json:"input_usd_per_million"`
+	OutputUSDPerMillion      float64        `json:"output_usd_per_million"`
+	ImageUSDPerImage         float64        `json:"image_usd_per_image,omitempty"`
+	ImageSize                string         `json:"image_size,omitempty"`
+	ImageQuality             string         `json:"image_quality,omitempty"`
+	CachedInputUSDPerMillion *float64       `json:"cached_input_usd_per_million,omitempty"`
+	Pricing                  *PriceSchedule `json:"pricing,omitempty"`
+	AppliedPrice             *AppliedPrice  `json:"applied_price,omitempty"`
 }
 
 type Scene struct {
@@ -44,6 +47,7 @@ type Scene struct {
 	QueueTimeoutSeconds int      `json:"queue_timeout_seconds"`
 	TimeoutSeconds      int      `json:"timeout_seconds"`
 	Retries             int      `json:"retries"`
+	RoutingPolicy       string   `json:"routing_policy,omitempty"`
 }
 
 type Pool struct {
@@ -79,11 +83,17 @@ func (c Config) Validate() error {
 			return fmt.Errorf("invalid or duplicate profile %q", p.ID)
 		}
 		profiles[p.ID] = p
+		if err := p.validatePricing(); err != nil {
+			return fmt.Errorf("profile %q: %w", p.ID, err)
+		}
 		if !validPrice(p.ImageUSDPerImage) || p.ImageUSDPerImage > 0 && (p.ImageSize == "" || p.ImageQuality == "" || len(p.ImageSize) > 32 || len(p.ImageQuality) > 32) {
 			return fmt.Errorf("invalid image tariff for profile %q", p.ID)
 		}
 	}
 	for _, s := range c.Scenes {
+		if s.RoutingPolicy != "" && s.RoutingPolicy != "ordered" && s.RoutingPolicy != "lowest_cost" {
+			return fmt.Errorf("invalid routing policy in scene %q", s.ID)
+		}
 		key := s.ProjectID + "/" + s.ID
 		if !idPattern.MatchString(s.ID) || scenes[key] || !projects[s.ProjectID] || s.Name == "" || len(s.Name) > 128 || len(s.Profiles) < 1 || len(s.Profiles) > 8 || s.TimeoutSeconds < 1 || s.TimeoutSeconds > 900 || s.QueueTimeoutSeconds < 1 || s.QueueTimeoutSeconds > s.TimeoutSeconds || s.Retries < 0 || s.Retries > 3 {
 			return fmt.Errorf("invalid or duplicate scene %q", key)
