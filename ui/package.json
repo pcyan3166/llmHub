@@ -3,6 +3,9 @@
 	"version": "0.1.0",
 	"private": true,
 	"scripts": {
+		"dev:llmhub": "vite --config llmhub/vite.config.mts",
+		"build:llmhub": "vite build --config llmhub/vite.config.mts && tsc --project llmhub/tsconfig.json",
+		"format:llmhub": "oxfmt llmhub lib/types/llmhubschemas.ts '!llmhub/dist/**'",
 		"dev": "vite",
 		"build-enterprise": "vite build && npm run typecheck",
 		"typecheck": "tsc --noEmit",

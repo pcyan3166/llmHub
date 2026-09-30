@@ -1,0 +1,47 @@
+services:
+  bifrost:
+    image: ${BIFROST_IMAGE:?Set BIFROST_IMAGE to a tested Bifrost version or digest}
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8081:8080"
+    environment:
+      BIFROST_ENCRYPTION_KEY: ${BIFROST_ENCRYPTION_KEY:?Set a persistent encryption secret}
+      BIFROST_SETUP_TOKEN: ${BIFROST_SETUP_TOKEN:?Set a first-admin setup secret}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:?Set your OpenAI provider key}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      GOMAXPROCS: "1"
+      GOMEMLIMIT: "384MiB"
+    volumes:
+      - bifrost_data:/app/data
+      - ./bifrost.json:/app/data/config.json:ro
+    mem_limit: 512m
+    cpus: 0.75
+    pids_limit: 256
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 6
+  llmhub:
+    build:
+      context: ../..
+      dockerfile: deploy/llmhub/Dockerfile
+    restart: unless-stopped
+    depends_on:
+      bifrost:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:8080:8080"
+    environment:
+      LLMHUB_ADMIN_TOKEN: ${LLMHUB_ADMIN_TOKEN:?Set an admin token of at least 24 characters}
+      GOMAXPROCS: "1"
+      GOMEMLIMIT: "96MiB"
+    volumes:
+      - llmhub_data:/data
+    mem_limit: 128m
+    cpus: 0.25
+    pids_limit: 128
+
+volumes:
+  bifrost_data:
+  llmhub_data:

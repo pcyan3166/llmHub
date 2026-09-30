@@ -1,0 +1,87 @@
+export type Project = { id: string; name: string; enabled: boolean; monthly_budget_usd: number };
+export type Profile = {
+	id: string;
+	provider: string;
+	model: string;
+	key_name: string;
+	pool_id: string;
+	max_output_tokens: number;
+	input_usd_per_million: number;
+	output_usd_per_million: number;
+	image_usd_per_image?: number;
+	image_size?: string;
+	image_quality?: string;
+};
+export type Scene = {
+	id: string;
+	project_id: string;
+	name: string;
+	profiles: string[];
+	endpoint: string;
+	queue_timeout_seconds: number;
+	timeout_seconds: number;
+	retries: number;
+};
+export type Pool = { id: string; concurrency: number; queue_size: number; rpm: number; tpm: number };
+export type Config = { projects: Project[]; profiles: Profile[]; scenes: Scene[]; pools: Pool[] };
+export type Entity = "projects" | "profiles" | "scenes" | "pools";
+export type ConfigResponse = { config: Config; version: number };
+export type Key = { id: string; project_id: string; prefix: string; created_at: string; revoked: boolean };
+export type Usage = {
+	project_id: string;
+	month: string;
+	attempts: number;
+	input_tokens: number;
+	output_tokens: number;
+	cost_usd: number;
+	reserved_usd: number;
+	errors: number;
+};
+export type Attempt = {
+	price_snapshot?: Profile;
+	id: string;
+	request_id: string;
+	project_id: string;
+	scene_id: string;
+	profile_id: string;
+	provider: string;
+	model: string;
+	status: string;
+	http_status: number;
+	input_tokens: number;
+	output_tokens: number;
+	cost_usd: number;
+	estimated: boolean;
+	queue_ms: number;
+	duration_ms: number;
+	created_at: string;
+};
+export type PoolStats = Pool & {
+	active: number;
+	queued: number;
+	requests_in_window: number;
+	tokens_in_window: number;
+	cooldown_until?: string;
+};
+export type Breakdown = {
+	project_id: string;
+	scene_id: string;
+	profile_id: string;
+	provider: string;
+	model: string;
+	attempts: number;
+	input_tokens: number;
+	output_tokens: number;
+	cost_usd: number;
+	estimated_attempts: number;
+};
+export type Overview = {
+	demo: boolean;
+	month: string;
+	usage: Usage[];
+	recent: Attempt[];
+	breakdown: Breakdown[];
+	pools: PoolStats[];
+	pending: number;
+	pending_limit: number;
+};

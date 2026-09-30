@@ -1,0 +1,27 @@
+{
+  "$schema": "../../transports/config.schema.json",
+  "encryption_key": "env.BIFROST_ENCRYPTION_KEY",
+  "setup_token": "env.BIFROST_SETUP_TOKEN",
+  "client": {
+    "initial_pool_size": 20,
+    "drop_excess_requests": false,
+    "enable_logging": true,
+    "disable_content_logging": true,
+    "log_retention_days": 30,
+    "allow_per_request_content_storage_override": false,
+    "allow_per_request_raw_override": false,
+    "allow_direct_keys": false
+  },
+  "config_store": { "enabled": true, "type": "sqlite", "config": { "path": "/app/data/config.db" } },
+  "logs_store": { "enabled": true, "type": "sqlite", "config": { "path": "/app/data/logs.db" } },
+  "providers": {
+    "openai": {
+      "keys": [{ "name": "primary", "value": "env.OPENAI_API_KEY", "models": ["*"], "weight": 1 }],
+      "network_config": { "max_retries": 0, "max_conns_per_host": 20, "default_request_timeout_in_seconds": 180 },
+      "concurrency_and_buffer_size": { "concurrency": 2, "buffer_size": 100 },
+      "send_back_raw_request": false,
+      "send_back_raw_response": false,
+      "store_raw_request_response": false
+    }
+  }
+}

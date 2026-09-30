@@ -1,0 +1,33 @@
+name: llmHub
+on:
+  push:
+    paths: ["hub/**", "ui/llmhub/**", "ui/lib/types/llmhubschemas.ts", "ui/package*.json", "deploy/llmhub/**", "tests/e2e/llmhub/**", ".github/workflows/llmhub.yml"]
+  pull_request:
+    paths: ["hub/**", "ui/llmhub/**", "ui/lib/types/llmhubschemas.ts", "ui/package*.json", "deploy/llmhub/**", "tests/e2e/llmhub/**", ".github/workflows/llmhub.yml"]
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.5"
+          cache-dependency-path: hub/go.sum
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22.14.0"
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+      - run: go test -race -timeout 60s ./...
+        working-directory: hub
+      - run: go vet ./...
+        working-directory: hub
+      - run: npm ci --ignore-scripts
+        working-directory: ui
+      - run: npm run build:llmhub
+        working-directory: ui
+      - run: npm run format:llmhub -- --check
+        working-directory: ui
+      - run: node --test hub/sdk/node/index.test.mjs
+      - run: python3 -m unittest discover -s hub/sdk/python -p '*_test.py'
