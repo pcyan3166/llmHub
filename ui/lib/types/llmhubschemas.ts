@@ -76,6 +76,10 @@ export const hubProjectSchema = z.object({
 	enabled: z.boolean(),
 	monthly_budget_usd: money,
 });
+export const hubCatalogSchema = z.object({
+	enabled: z.boolean(),
+	interval_minutes: z.number().int().min(15, "检查间隔至少 15 分钟").max(10080, "检查间隔不超过 7 天"),
+});
 export const hubPoolSchema = z.object({
 	id,
 	concurrency: z.number().int().min(1).max(256),
@@ -95,6 +99,16 @@ export const hubProfileSchema = z
 		output_usd_per_million: money,
 		cached_input_usd_per_million: money.optional(),
 		pricing: pricing.optional(),
+		follow_official: z.boolean().optional(),
+		official_terms: z
+			.string()
+			.regex(/^[a-f0-9]{64}$/)
+			.optional(),
+		official_calendar_year: z.number().int().min(2000).max(2200).optional(),
+		official_calendar_hash: z
+			.string()
+			.regex(/^[a-f0-9]{64}$/)
+			.optional(),
 		image_usd_per_image: money.optional(),
 		image_size: z.string().max(32).optional(),
 		image_quality: z.string().max(32).optional(),

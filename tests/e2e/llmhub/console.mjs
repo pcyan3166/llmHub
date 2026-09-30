@@ -12,6 +12,8 @@ const pricingID = `qa-pricing-${Date.now()}`;
 const sceneID = `qa-route-${Date.now()}`;
 const projectID = `qa-project-${Date.now()}`;
 const headers = { Authorization: `Bearer ${admin}` };
+let catalogRestore;
+let catalogTestSettings;
 await mkdir(output, { recursive: true });
 const browser = await chromium.launch({ headless: true });
 const watchdog = setTimeout(() => { console.error("llmHub browser QA exceeded 90 seconds"); process.exit(1); }, 90000);
@@ -29,12 +31,75 @@ try {
   await page.locator(".metrics").waitFor();
   await page.getByTestId("hub-request-row").first().waitFor();
   await page.screenshot({ path: path.join(output, "desktop-overview.png") });
-  for (const view of ["projects", "scenes", "profiles", "pools", "requests", "usage", "keys", "settings"]) {
+  for (const view of ["projects", "scenes", "profiles", "catalog", "pools", "requests", "usage", "keys", "settings"]) {
     await page.getByTestId(`hub-nav-${view}`).click();
     await page.locator(".page-heading h1").waitFor();
     const overflowing = await page.evaluate(() => document.documentElement.scrollWidth > innerWidth + 1);
     assert.equal(overflowing, false, `${view} overflows desktop viewport`);
   }
+  // UI contract fixtures are isolated from real official-page polling; backend sync is covered by Go tests.
+  const catalogConfig = await (await page.request.get(`${url}/api/llmhub/config`, { headers })).json();
+  const liveCatalog = await (await page.request.get(`${url}/api/llmhub/catalog`, { headers })).json();
+  assert.deepEqual(liveCatalog.sources.map((s) => s.provider), ["deepseek", "openai", "anthropic"]);
+  const catalogProfile = catalogConfig.config.profiles[0];
+  const catalogAt = new Date().toISOString();
+  const catalogHash = "a".repeat(64);
+  const quote = { name: catalogProfile.model, model: catalogProfile.model, input: 0.25, output: 1, cached: 0.05, automatic: true, conditions: "QA standard text tariff" };
+  const catalogFixture = {
+    settings: catalogConfig.config.catalog ?? { enabled: true, interval_minutes: 360 },
+    sources: liveCatalog.sources.map((s) => ({ ...s, checked_at: catalogAt, verified_at: catalogAt, hash: catalogHash, terms_hash: catalogHash, news_url: s.news_url, news_checked_at: catalogAt, news_hash: catalogHash, news_error: "", news_models: ["qa-new-model"], quotes: s.provider === "openai" ? [quote] : [], error: s.provider === "deepseek" ? "QA official layout changed" : "" })),
+    profiles: [{ id: catalogProfile.id, status: "review", reason: "待管理员采纳并确认计费条件", verified_at: catalogAt, can_apply: true, quote, hash: catalogHash }],
+    events: [{ at: catalogAt, provider: "openai", model: "qa-new-model", kind: "new_model", hash: catalogHash, after: quote }],
+    running: false,
+    next_checks: { deepseek: catalogAt, openai: catalogAt, anthropic: catalogAt },
+    at: catalogAt,
+  };
+  let approved = false;
+  let checked = false;
+  await page.route("**/api/llmhub/catalog", (route) => route.fulfill({ json: catalogFixture }));
+  await page.route("**/api/llmhub/catalog/check", async (route) => { checked = true; await route.fulfill({ status: 202, json: { running: true } }); });
+  await page.route("**/api/llmhub/catalog/apply", async (route) => {
+    const body = route.request().postDataJSON();
+    assert.equal(body.profile_id, catalogProfile.id);
+    assert.equal(body.hash, catalogHash);
+    assert.equal(body.confirm_conditions, true);
+    approved = true;
+    await route.fulfill({ json: catalogConfig });
+  });
+  await page.getByTestId("hub-nav-catalog").click();
+  await page.getByText("QA official layout changed").waitFor();
+  await page.getByTestId("hub-catalog-check").click();
+  await page.getByText("官网检查已开始").waitFor();
+  assert.equal(checked, true);
+  await page.getByTestId(`hub-catalog-apply-${catalogProfile.id}`).click();
+  assert.equal(await page.getByTestId("hub-catalog-approve").isDisabled(), true);
+  await page.getByTestId("hub-catalog-confirm").check();
+  await page.getByTestId("hub-catalog-approve").click();
+  await page.locator("dialog").waitFor({ state: "hidden" });
+  assert.equal(approved, true);
+  await page.getByTestId("hub-catalog-events").getByText("qa-new-model").waitFor();
+  await page.screenshot({ path: path.join(output, "desktop-catalog.png") });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.screenshot({ path: path.join(output, "mobile-catalog.png") });
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth + 1), false, "mobile catalog overflow");
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  await page.unroute("**/api/llmhub/catalog");
+  await page.unroute("**/api/llmhub/catalog/check");
+  await page.unroute("**/api/llmhub/catalog/apply");
+  const originalCatalogSettings = catalogConfig.config.catalog;
+  const qaCatalogSettings = { enabled: originalCatalogSettings?.enabled ?? true, interval_minutes: originalCatalogSettings?.interval_minutes === 375 ? 390 : 375 };
+  catalogRestore = originalCatalogSettings;
+  catalogTestSettings = qaCatalogSettings;
+  await page.getByTestId("hub-catalog-interval").fill(String(qaCatalogSettings.interval_minutes));
+  await page.getByTestId("hub-catalog-save").click();
+  await page.getByText("检查设置已保存").waitFor();
+  const savedCatalogConfig = await (await page.request.get(`${url}/api/llmhub/config`, { headers })).json();
+  assert.deepEqual(savedCatalogConfig.config.catalog, qaCatalogSettings);
+  const restoredCatalogConfig = { ...savedCatalogConfig.config, catalog: originalCatalogSettings };
+  const restored = await page.request.put(`${url}/api/llmhub/config`, { headers, data: { config: restoredCatalogConfig, version: savedCatalogConfig.version } });
+  assert.equal(restored.status(), 200, "catalog settings restoration failed");
+  catalogTestSettings = undefined;
+  await page.getByTitle("刷新数据", { exact: true }).click();
   await page.getByTestId("hub-nav-projects").click();
   await page.getByTestId("hub-create").click();
   const id = projectID;
@@ -157,7 +222,7 @@ try {
   await page.getByTestId("hub-delete-confirm").click();
   await pricingRow.waitFor({ state: "hidden" });
   assert.deepEqual(errors, [], "uncaught browser errors");
-  console.log("PASS: login recovery, nine views, CRUD, time pricing/current rates/cache/holiday/overlap validation, cost routing, key issuance/revocation, image, SSE, desktop/mobile layout; screenshots in test-results/llmhub");
+  console.log("PASS: login recovery, ten views, official catalog/announcement/failure/approval/check contracts, CRUD, time pricing/current rates/cache/holiday/overlap validation, cost routing, key issuance/revocation, image, SSE, desktop/mobile layout; screenshots in test-results/llmhub");
 } finally {
   clearTimeout(watchdog);
   await browser.close();
@@ -166,7 +231,9 @@ try {
   if (response.ok) {
     const { config, version } = await response.json();
     const next = { ...config, projects: config.projects.filter((p) => p.id !== projectID), profiles: config.profiles.filter((p) => p.id !== pricingID), scenes: config.scenes.filter((s) => s.id !== sceneID) };
-    if (next.projects.length !== config.projects.length || next.profiles.length !== config.profiles.length || next.scenes.length !== config.scenes.length) {
+    const restoreCatalog = catalogTestSettings && config.catalog?.enabled === catalogTestSettings.enabled && config.catalog?.interval_minutes === catalogTestSettings.interval_minutes;
+    if (restoreCatalog) next.catalog = catalogRestore;
+    if (restoreCatalog || next.projects.length !== config.projects.length || next.profiles.length !== config.profiles.length || next.scenes.length !== config.scenes.length) {
       const cleaned = await fetch(`${url}/api/llmhub/config`, { method: "PUT", headers: { ...headers, "Content-Type": "application/json" }, body: JSON.stringify({ config: next, version }), signal: AbortSignal.timeout(5000) });
       assert.equal(cleaned.status, 200, "QA fixture cleanup failed; unrelated configuration was not overwritten");
     }

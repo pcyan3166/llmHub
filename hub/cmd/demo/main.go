@@ -78,13 +78,14 @@ func main() {
 	}
 	server := &http.Server{Addr: *listen, Handler: hub, ReadHeaderTimeout: 5 * time.Second, IdleTimeout: 60 * time.Second}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	hub.StartCatalog(ctx)
 	defer stop()
 	go func() {
 		if err := server.ListenAndServe(); err != http.ErrServerClosed {
 			log.Fatal(err)
 		}
 	}()
-	log.Printf("LOCAL MOCK DEMO http://%s ; admin token: %s ; no external API calls", *listen, adminToken)
+	log.Printf("LOCAL MOCK DEMO http://%s ; admin token: %s ; no external model API calls; public official-doc monitoring enabled", *listen, adminToken)
 	<-ctx.Done()
 	shutdown, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()

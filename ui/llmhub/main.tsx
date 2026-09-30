@@ -24,6 +24,7 @@ import {
 	Menu,
 	Server,
 	ShieldCheck,
+	Globe,
 } from "lucide-react";
 import {
 	api,
@@ -39,6 +40,7 @@ import {
 	useRevokeKeyMutation,
 } from "./api";
 import { Editor, Modal } from "./views/editor";
+import { CatalogView } from "./views/catalog";
 import type { Entity, Config, Attempt } from "./types";
 import "./style.css";
 
@@ -47,6 +49,7 @@ const nav = [
 	{ id: "projects", label: "项目", icon: FolderKanban },
 	{ id: "scenes", label: "业务场景", icon: Workflow },
 	{ id: "profiles", label: "模型 Profiles", icon: Layers3 },
+	{ id: "catalog", label: "官方模型与价格", icon: Globe },
 	{ id: "pools", label: "共享队列", icon: ListOrdered },
 	{ id: "requests", label: "请求记录", icon: ScrollText },
 	{ id: "usage", label: "用量与成本", icon: ChartNoAxesCombined },
@@ -76,7 +79,7 @@ function App() {
 	const [notice, setNotice] = useState("");
 	const [selected, setSelected] = useState<Attempt>();
 	const [revoke, setRevoke] = useState<string>();
-	const configQuery = useConfigQuery(undefined, { skip: !token });
+	const configQuery = useConfigQuery(undefined, { skip: !token, pollingInterval: 30000, skipPollingIfUnfocused: true });
 	const pricingQuery = usePricingQuery(undefined, {
 		skip: !token || page !== "profiles",
 		pollingInterval: 5000,
@@ -354,7 +357,9 @@ function App() {
 						</div>
 						{overview?.demo && (
 							<div className="notice" role="status">
-								本地模拟环境 · 数据来自模拟请求，不产生供应商费用
+								{page === "catalog"
+									? "本地模拟环境 · 模型请求仅访问本机；价格与公告来自真实官网"
+									: "本地模拟环境 · 数据来自模拟请求，不产生供应商费用"}
 							</div>
 						)}
 						{notice && (
@@ -582,6 +587,16 @@ function App() {
 										{!config.scenes.length && <Empty label="暂无场景" />}
 									</div>
 								)}
+								{page === "catalog" && configQuery.data && (
+									<CatalogView
+										config={configQuery.data.config}
+										version={configQuery.data.version}
+										onSave={commit}
+										refreshConfig={() => {
+											void configQuery.refetch();
+										}}
+									/>
+								)}
 								{page === "profiles" && (
 									<section>
 										<div className="price-status" data-testid="hub-pricing-status">
@@ -610,10 +625,12 @@ function App() {
 												<tbody>
 													{config.profiles.map((p) => {
 														const effective = pricingQuery.isError ? undefined : pricingQuery.data?.profiles.find((v) => v.id === p.id);
+														const verification = pricingQuery.data?.verification.find((v) => v.id === p.id);
 														return (
 															<tr key={p.id}>
 																<td>
 																	<b>{p.id}</b>
+																	<small>{p.follow_official ? "跟随官方 · 状态见官方模型与价格" : "手动价格"}</small>
 																</td>
 																<td>
 																	{p.provider}
@@ -624,7 +641,9 @@ function App() {
 																	<small>{p.pool_id}</small>
 																</td>
 																<td data-testid={`hub-current-price-${p.id}`}>
-																	{effective ? (
+																	{p.follow_official && verification?.status !== "verified" ? (
+																		<span className="error">暂停派发 · {verification?.reason ?? "待验证"}</span>
+																	) : effective ? (
 																		<>
 																			{usd(effective.input_usd_per_million)} / {usd(effective.output_usd_per_million)}
 																			<small>

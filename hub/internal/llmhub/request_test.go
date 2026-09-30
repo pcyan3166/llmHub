@@ -28,6 +28,33 @@ func TestRequestValidationAndAlias(t *testing.T) {
 	}
 }
 
+func TestOfficialOpenAIPricesPinStandardServiceTier(t *testing.T) {
+	p := testConfig().Profiles[0]
+	p.FollowOfficial = true
+	for _, endpoint := range []string{"/v1/chat/completions", "/v1/responses"} {
+		raw := `{"messages":[{"role":"user","content":"hello"}],"input":"hello"}`
+		body, _, _, _, err := prepareRequest([]byte(raw), endpoint, p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var value map[string]json.RawMessage
+		json.Unmarshal(body, &value)
+		if string(value["service_tier"]) != `"default"` {
+			t.Fatal("account default could opt into premium pricing", string(body))
+		}
+		if _, _, _, _, err := prepareRequest([]byte(`{"messages":[{"role":"user","content":"hello"}],"input":"hello","service_tier":"priority"}`), endpoint, p); err == nil {
+			t.Fatal("caller overrode standard tariff")
+		}
+	}
+	p.FollowOfficial = false
+	body, _, _, _, _ := prepareRequest([]byte(`{"messages":[{"role":"user","content":"hello"}]}`), "/v1/chat/completions", p)
+	var value map[string]json.RawMessage
+	json.Unmarshal(body, &value)
+	if _, ok := value["service_tier"]; ok {
+		t.Fatal("manual profile behavior changed")
+	}
+}
+
 func TestImageTariffAndImmutableSize(t *testing.T) {
 	p := Profile{Provider: "openai", Model: "image-test", ImageUSDPerImage: 0.05, ImageSize: "1024x1024", ImageQuality: "standard"}
 	body, _, output, stream, err := prepareRequest([]byte(`{"model":"scene/image.generate","prompt":"test"}`), "/v1/images/generations", p)

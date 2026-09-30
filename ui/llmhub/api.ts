@@ -1,7 +1,7 @@
 import { createApi, fetchBaseQuery } from "@reduxjs/toolkit/query/react";
 import { configureStore, createSlice, PayloadAction } from "@reduxjs/toolkit";
 import { setupListeners } from "@reduxjs/toolkit/query";
-import type { ConfigResponse, Config, Key, Overview, PricingResponse } from "./types";
+import type { ConfigResponse, Config, Key, Overview, PricingResponse, CatalogResponse } from "./types";
 
 const session = createSlice({
 	name: "session",
@@ -24,10 +24,19 @@ export const api = createApi({
 			return headers;
 		},
 	}),
-	tagTypes: ["Config", "Keys", "Usage"],
+	tagTypes: ["Config", "Keys", "Usage", "Catalog"],
 	endpoints: (build) => ({
 		config: build.query<ConfigResponse, void>({ query: () => "config", providesTags: ["Config"] }),
 		pricing: build.query<PricingResponse, void>({ query: () => "pricing", providesTags: ["Config"] }),
+		catalog: build.query<CatalogResponse, void>({ query: () => "catalog", providesTags: ["Catalog", "Config"] }),
+		checkCatalog: build.mutation<{ running: boolean }, void>({
+			query: () => ({ url: "catalog/check", method: "POST" }),
+			invalidatesTags: ["Catalog"],
+		}),
+		applyCatalog: build.mutation<ConfigResponse, { profile_id: string; hash: string; version: number; confirm_conditions: boolean }>({
+			query: (body) => ({ url: "catalog/apply", method: "POST", body }),
+			invalidatesTags: ["Catalog", "Config", "Usage"],
+		}),
 		overview: build.query<Overview, { month: string; project: string }>({
 			query: ({ month, project }) => `overview?month=${encodeURIComponent(month)}&project=${encodeURIComponent(project)}`,
 			providesTags: ["Usage"],
@@ -55,6 +64,9 @@ setupListeners(store.dispatch);
 export const {
 	useConfigQuery,
 	usePricingQuery,
+	useCatalogQuery,
+	useCheckCatalogMutation,
+	useApplyCatalogMutation,
 	useOverviewQuery,
 	useKeysQuery,
 	useSaveMutation,

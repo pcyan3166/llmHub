@@ -75,6 +75,9 @@ func prepareRequest(raw []byte, endpoint string, p Profile) ([]byte, int64, int6
 		}
 	}
 	body["model"], _ = json.Marshal(p.Provider + "/" + p.Model)
+	if p.FollowOfficial && p.Provider == "openai" && (endpoint == "/v1/chat/completions" || endpoint == "/v1/responses") {
+		body["service_tier"] = json.RawMessage(`"default"`)
+	}
 	if stream && endpoint == "/v1/chat/completions" {
 		body["stream_options"] = json.RawMessage(`{"include_usage":true}`)
 	}

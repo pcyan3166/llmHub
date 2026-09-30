@@ -89,6 +89,7 @@ func OpenStore(path string) (*Store, error) {
 BEGIN IMMEDIATE;
 CREATE TABLE IF NOT EXISTS settings (id INTEGER PRIMARY KEY CHECK(id=1), version INTEGER NOT NULL, config TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS config_history (version INTEGER PRIMARY KEY, created_at TEXT NOT NULL, config TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS catalog_state (id INTEGER PRIMARY KEY CHECK(id=1), state TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS project_keys (id TEXT PRIMARY KEY, project_id TEXT NOT NULL, hash TEXT UNIQUE NOT NULL, prefix TEXT NOT NULL, created_at TEXT NOT NULL, revoked INTEGER NOT NULL DEFAULT 0);
 CREATE TABLE IF NOT EXISTS attempts (id TEXT PRIMARY KEY, request_id TEXT NOT NULL, project_id TEXT NOT NULL, scene_id TEXT NOT NULL, profile_id TEXT NOT NULL, pool_id TEXT NOT NULL, provider TEXT NOT NULL, model TEXT NOT NULL, month TEXT NOT NULL, created_at TEXT NOT NULL, status TEXT NOT NULL, http_status INTEGER NOT NULL DEFAULT 0, input_tokens INTEGER NOT NULL, output_tokens INTEGER NOT NULL, cost_micros INTEGER NOT NULL DEFAULT 0, reserved_micros INTEGER NOT NULL DEFAULT 0, estimated INTEGER NOT NULL DEFAULT 1, queue_ms INTEGER NOT NULL DEFAULT 0, duration_ms INTEGER NOT NULL DEFAULT 0);
 CREATE INDEX IF NOT EXISTS attempts_project_month ON attempts(project_id,month);
@@ -127,6 +128,10 @@ func (s *Store) Config() (Config, int64, error) {
 }
 
 func (s *Store) SaveConfig(c Config, version int64) (int64, error) {
+	return s.saveConfigAndCatalog(c, version, nil)
+}
+
+func (s *Store) saveConfigAndCatalog(c Config, version int64, catalog *CatalogState) (int64, error) {
 	if err := c.Validate(); err != nil {
 		return 0, err
 	}
@@ -154,6 +159,11 @@ func (s *Store) SaveConfig(c Config, version int64) (int64, error) {
 	}
 	if _, err = tx.Exec("INSERT INTO config_history VALUES(?,?,?)", version+1, time.Now().UTC().Format(time.RFC3339Nano), string(raw)); err != nil {
 		return 0, err
+	}
+	if catalog != nil {
+		if err = writeCatalog(tx, *catalog); err != nil {
+			return 0, err
+		}
 	}
 	return version + 1, tx.Commit()
 }

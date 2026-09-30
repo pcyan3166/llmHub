@@ -8,10 +8,11 @@ import (
 )
 
 type Config struct {
-	Projects []Project `json:"projects"`
-	Profiles []Profile `json:"profiles"`
-	Scenes   []Scene   `json:"scenes"`
-	Pools    []Pool    `json:"pools"`
+	Projects []Project        `json:"projects"`
+	Profiles []Profile        `json:"profiles"`
+	Scenes   []Scene          `json:"scenes"`
+	Pools    []Pool           `json:"pools"`
+	Catalog  *CatalogSettings `json:"catalog,omitempty"`
 }
 
 type Project struct {
@@ -36,6 +37,10 @@ type Profile struct {
 	CachedInputUSDPerMillion *float64       `json:"cached_input_usd_per_million,omitempty"`
 	Pricing                  *PriceSchedule `json:"pricing,omitempty"`
 	AppliedPrice             *AppliedPrice  `json:"applied_price,omitempty"`
+	FollowOfficial           bool           `json:"follow_official,omitempty"`
+	OfficialTerms            string         `json:"official_terms,omitempty"`
+	OfficialCalendarYear     int            `json:"official_calendar_year,omitempty"`
+	OfficialCalendarHash     string         `json:"official_calendar_hash,omitempty"`
 }
 
 type Scene struct {
@@ -61,6 +66,9 @@ type Pool struct {
 var idPattern = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,63}$`)
 
 func (c Config) Validate() error {
+	if c.Catalog != nil && (c.Catalog.IntervalMinutes < 15 || c.Catalog.IntervalMinutes > 10080) {
+		return fmt.Errorf("catalog interval must be between 15 and 10080 minutes")
+	}
 	if len(c.Projects) > 1000 || len(c.Profiles) > 1000 || len(c.Scenes) > 5000 || len(c.Pools) > 1000 {
 		return fmt.Errorf("configuration exceeds entity limits")
 	}
@@ -78,6 +86,9 @@ func (c Config) Validate() error {
 		pools[p.ID] = true
 	}
 	for _, p := range c.Profiles {
+		if p.FollowOfficial && (p.Provider != "openai" && p.Provider != "deepseek" && p.Provider != "anthropic" || p.ImageUSDPerImage > 0) || p.OfficialTerms != "" && !catalogHashPattern.MatchString(p.OfficialTerms) || p.OfficialCalendarHash != "" && !catalogHashPattern.MatchString(p.OfficialCalendarHash) || p.OfficialCalendarYear != 0 && (p.OfficialCalendarYear < 2000 || p.OfficialCalendarYear > 2200) {
+			return fmt.Errorf("invalid official price tracking for profile %q", p.ID)
+		}
 		_, duplicate := profiles[p.ID]
 		if !idPattern.MatchString(p.ID) || duplicate || !pools[p.PoolID] || !idPattern.MatchString(p.Provider) || p.Model == "" || len(p.Model) > 256 || strings.ContainsAny(p.Model+p.KeyName, "\r\n") || p.KeyName == "" || len(p.KeyName) > 128 || p.MaxOutputTokens < 1 || p.MaxOutputTokens > 1000000 || !validPrice(p.InputUSDPerMillion) || !validPrice(p.OutputUSDPerMillion) {
 			return fmt.Errorf("invalid or duplicate profile %q", p.ID)

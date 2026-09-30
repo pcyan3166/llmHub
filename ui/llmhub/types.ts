@@ -24,6 +24,9 @@ export type AppliedPrice = {
 	priced_at: string;
 	cached_input_tokens: number;
 	cache_usage_known: boolean;
+	official_source_url?: string;
+	official_source_hash?: string;
+	official_verified_at?: string;
 };
 export type Profile = {
 	id: string;
@@ -37,6 +40,10 @@ export type Profile = {
 	cached_input_usd_per_million?: number;
 	pricing?: PriceSchedule;
 	applied_price?: AppliedPrice;
+	follow_official?: boolean;
+	official_terms?: string;
+	official_calendar_year?: number;
+	official_calendar_hash?: string;
 	image_usd_per_image?: number;
 	image_size?: string;
 	image_quality?: string;
@@ -52,9 +59,66 @@ export type Scene = {
 	retries: number;
 	routing_policy?: "ordered" | "lowest_cost";
 };
-export type PricingResponse = { at: string; profiles: Profile[] };
+export type PricingResponse = { at: string; profiles: Profile[]; verification: CatalogProfile[] };
 export type Pool = { id: string; concurrency: number; queue_size: number; rpm: number; tpm: number };
-export type Config = { projects: Project[]; profiles: Profile[]; scenes: Scene[]; pools: Pool[] };
+export type CatalogSettings = { enabled: boolean; interval_minutes: number };
+export type Config = { projects: Project[]; profiles: Profile[]; scenes: Scene[]; pools: Pool[]; catalog?: CatalogSettings };
+export type CatalogQuote = {
+	name: string;
+	model?: string;
+	input: number;
+	output: number;
+	cached?: number;
+	peak?: CatalogQuote;
+	automatic: boolean;
+	conditions: string;
+	billing_details?: Record<string, string>;
+};
+export type CatalogSource = {
+	provider: string;
+	url: string;
+	checked_at: string;
+	verified_at: string;
+	hash: string;
+	terms_hash: string;
+	error?: string;
+	failures: number;
+	quotes: CatalogQuote[] | null;
+	news_url: string;
+	news_checked_at: string;
+	news_hash: string;
+	news_error?: string;
+	news_models: string[] | null;
+};
+export type CatalogEvent = {
+	at: string;
+	provider: string;
+	model?: string;
+	kind: string;
+	hash: string;
+	before?: CatalogQuote;
+	after?: CatalogQuote;
+	profiles?: string[];
+};
+export type CatalogProfile = {
+	id: string;
+	status: string;
+	reason: string;
+	source_url?: string;
+	verified_at: string;
+	can_apply: boolean;
+	quote?: CatalogQuote;
+	hash?: string;
+};
+export type CatalogResponse = {
+	settings: CatalogSettings;
+	sources: CatalogSource[];
+	events: CatalogEvent[];
+	profiles: CatalogProfile[];
+	running: boolean;
+	next_checks: Record<string, string>;
+	at: string;
+};
 export type Entity = "projects" | "profiles" | "scenes" | "pools";
 export type ConfigResponse = { config: Config; version: number };
 export type Key = { id: string; project_id: string; prefix: string; created_at: string; revoked: boolean };

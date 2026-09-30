@@ -34,6 +34,7 @@ type Server struct {
 	staticDir string
 	logger    *slog.Logger
 	now       func() time.Time
+	catalog   *Catalog
 }
 
 func NewServer(store *Store, upstream, adminToken, staticDir string) (*Server, error) {
@@ -57,10 +58,12 @@ func NewServer(store *Store, upstream, adminToken, staticDir string) (*Server, e
 	}
 	transport := &http.Transport{Proxy: http.ProxyFromEnvironment, MaxIdleConns: 64, MaxIdleConnsPerHost: 32, MaxConnsPerHost: 256, IdleConnTimeout: 60 * time.Second, ResponseHeaderTimeout: 90 * time.Second}
 	client := &http.Client{Transport: transport, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
-	return &Server{store: store, scheduler: scheduler, client: client, upstream: u, adminHash: sha256.Sum256([]byte(adminToken)), config: c, version: version, admission: make(chan struct{}, 128), staticDir: staticDir, logger: slog.Default(), now: time.Now}, nil
+	s := &Server{store: store, scheduler: scheduler, client: client, upstream: u, adminHash: sha256.Sum256([]byte(adminToken)), config: c, version: version, admission: make(chan struct{}, 128), staticDir: staticDir, logger: slog.Default(), now: time.Now}
+	s.catalog = newCatalog(s)
+	return s, nil
 }
 
-func (s *Server) Close() { s.scheduler.Close(); s.client.CloseIdleConnections() }
+func (s *Server) Close() { s.catalog.close(); s.scheduler.Close(); s.client.CloseIdleConnections() }
 
 func (s *Server) snapshot() Config { s.configMu.RLock(); defer s.configMu.RUnlock(); return s.config }
 
@@ -153,6 +156,10 @@ func readJSON(w http.ResponseWriter, r *http.Request, value any) error {
 }
 
 func (s *Server) admin(w http.ResponseWriter, r *http.Request) {
+	if strings.HasPrefix(r.URL.Path, "/api/llmhub/catalog") {
+		s.catalog.admin(w, r)
+		return
+	}
 	switch {
 	case r.URL.Path == "/api/llmhub/config" && r.Method == "GET":
 		s.configMu.RLock()
@@ -196,10 +203,17 @@ func (s *Server) admin(w http.ResponseWriter, r *http.Request) {
 	case r.URL.Path == "/api/llmhub/pricing" && r.Method == "GET":
 		at := s.now()
 		profiles := []Profile{}
+		verification := []CatalogProfile{}
+		state, err := s.store.catalogState()
+		if err != nil {
+			s.fail(w, err)
+			return
+		}
 		for _, p := range s.snapshot().Profiles {
 			profiles = append(profiles, p.priceAt(at))
+			verification = append(verification, s.catalog.profileStatus(state, p))
 		}
-		writeJSON(w, 200, map[string]any{"at": at.UTC(), "profiles": profiles})
+		writeJSON(w, 200, map[string]any{"at": at.UTC(), "profiles": profiles, "verification": verification})
 	case r.URL.Path == "/api/llmhub/keys" && r.Method == "POST":
 		var body struct {
 			ProjectID string `json:"project_id"`
@@ -326,6 +340,17 @@ func (s *Server) inference(w http.ResponseWriter, r *http.Request) {
 	remaining := append([]string(nil), scene.Profiles...)
 	attemptsUsed := make(map[string]int, len(remaining))
 	for len(remaining) > 0 {
+		valid := remaining[:0]
+		for _, id := range remaining {
+			if _, err := s.catalog.verifiedProfile(c.Profile(id)); err == nil {
+				valid = append(valid, id)
+			}
+		}
+		remaining = valid
+		if len(remaining) == 0 {
+			writeError(w, 503, "official_price_unverified", "官方报价已过期或待核对，跟随官方的档案暂不派发请求")
+			return
+		}
 		profileID := cheapestRoute(c, scene, remaining, raw, s.now())
 		profile := c.Profile(profileID)
 		reroute := false
@@ -368,7 +393,19 @@ func (s *Server) inference(w http.ResponseWriter, r *http.Request) {
 				reroute = true
 				break
 			}
+			source, priceErr := s.catalog.verifiedProfile(c.Profile(profileID))
+			if priceErr != nil {
+				lease.Finish(0)
+				writeError(w, 503, "official_price_unverified", priceErr.Error())
+				return
+			}
 			profile = c.Profile(profileID).priceAt(pricedAt)
+			if source != nil {
+				profile.AppliedPrice.OfficialSourceURL = source.URL
+				profile.AppliedPrice.OfficialSourceHash = source.Hash
+				verified := source.VerifiedAt
+				profile.AppliedPrice.OfficialVerifiedAt = &verified
+			}
 			attempt := Attempt{ID: attemptID, RequestID: requestID, ProjectID: projectID, SceneID: scene.ID, ProfileID: profile.ID, PoolID: profile.PoolID, Provider: profile.Provider, Model: profile.Model, InputTokens: input, OutputTokens: output, QueueMS: queueMS, PriceSnapshot: &profile}
 			reserve := costMicros(profile, input, output)
 			// Recheck the project after waiting so disabling it immediately stops queued traffic.

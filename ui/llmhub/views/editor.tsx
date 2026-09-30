@@ -11,6 +11,7 @@ const labels: Record<string, string> = {
 	enabled: "启用",
 	monthly_budget_usd: "月预算 / USD（0 为不限）",
 	provider: "供应商标识",
+	follow_official: "跟随已确认的官方报价",
 	model: "模型 ID",
 	key_name: "Bifrost 密钥名称",
 	pool_id: "共享限额池",
@@ -46,6 +47,7 @@ const initial = {
 		input_usd_per_million: 0,
 		output_usd_per_million: 0,
 		cached_input_usd_per_million: undefined,
+		follow_official: false,
 		image_usd_per_image: 0,
 		image_size: "",
 		image_quality: "",
@@ -132,7 +134,9 @@ export function Editor({
 			>
 				<div className="form-grid">
 					{Object.entries(defaults)
-						.filter(([key]) => key !== "pricing" && key !== "applied_price")
+						.filter(
+							([key]) => !["pricing", "applied_price", "official_terms", "official_calendar_year", "official_calendar_hash"].includes(key),
+						)
 						.map(([key, value]) => (
 							<label className={key === "profiles" ? "wide" : ""} key={key}>
 								<span>{labels[key]}</span>

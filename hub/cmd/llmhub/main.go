@@ -60,6 +60,7 @@ func run(listen, dbPath, upstream, staticDir, seed string) error {
 	defer service.Close()
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+	service.StartCatalog(ctx)
 	server := &http.Server{Addr: listen, Handler: service, ReadHeaderTimeout: 10 * time.Second, ReadTimeout: 30 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 16 << 10}
 	errors := make(chan error, 1)
 	go func() { errors <- server.ListenAndServe() }()
