@@ -55,9 +55,9 @@ Selected model is at capacity. Please try a different model.
 
 Fork 为 `pcyan3166/llmHub`，上游 remote 保留 `maximhq/bifrost`。本地实现已提交为 `dde49bf`，分支 `codex/llmhub-control-plane`。
 
-推送尚未成功：本机 Git 返回 `could not read Username for 'https://github.com': terminal prompts disabled`；GitHub 连接器创建分支返回 403 `Resource not accessible by integration`。尚未创建 PR，远端没有本次实现。需要完成本机 Git 登录或给予连接器仓库 Contents 写权限；不要在聊天中传递密码或 Token。
+初次 HTTPS 推送缺少本机凭证，连接器创建分支返回 403。用户提供的截图确认 `pcyan3166` 下的 ChatGPT Codex Connector 已有代码读写权限与全部仓库访问权；因此不能将连接器错误归因于用户未授权。当前任务的连接器却仍只返回 `ssuo95918-wq` 账号及其安装信息，绑定差异尚未修复，没有继续要求用户重复授权。
 
-本机 Git 授权后可继续：
+随后使用本机已有 SSH 认证，GitHub 返回 `Hi pcyan3166! You've successfully authenticated`，通过 SSH 成功推送 `codex/llmhub-control-plane`。`origin` 保留 HTTPS 拉取地址，推送地址改为 `git@github.com:pcyan3166/llmHub.git`。后续推送可直接执行：
 
 ```bash
 git push --set-upstream origin codex/llmhub-control-plane
