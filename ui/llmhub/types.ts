@@ -24,6 +24,9 @@ export type AppliedPrice = {
 	priced_at: string;
 	cached_input_tokens: number;
 	cache_usage_known: boolean;
+	usage_known?: boolean;
+	cache_write_tokens?: number;
+	cache_write_usage_known?: boolean;
 	official_source_url?: string;
 	official_source_hash?: string;
 	official_verified_at?: string;
@@ -135,6 +138,7 @@ export type Usage = {
 	errors: number;
 };
 export type Attempt = {
+	prediction?: CostPrediction;
 	price_snapshot?: Profile;
 	id: string;
 	request_id: string;
@@ -153,6 +157,24 @@ export type Attempt = {
 	duration_ms: number;
 	created_at: string;
 };
+export type CostPrediction = {
+	cost_usd: number;
+	uncached_usd: number;
+	reservation_usd: number;
+	input_tokens: number;
+	output_tokens: number;
+	expected_cached_tokens: number;
+	cache_hit_probability: number | null;
+	confidence: "low" | "medium" | "high";
+	cache_confidence: "unknown" | "low" | "medium" | "high";
+	samples: number;
+	cache_samples: number;
+	method: string;
+	at: string;
+	cache_horizon_seconds: number;
+	error_usd?: number;
+};
+export type EstimateResponse = { candidates: { profile_id: string; prediction: CostPrediction | null; error?: string }[]; at: string };
 export type PoolStats = Pool & {
 	active: number;
 	queued: number;

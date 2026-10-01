@@ -140,7 +140,7 @@ func TestCostRoutingChangesWithTimeAndPreservesTies(t *testing.T) {
 
 func TestCacheUsageAndCost(t *testing.T) {
 	p := tariffProfile().priceAt(instant("2026-09-28T00:00:00Z"))
-	for _, raw := range []string{`{"usage":{"prompt_tokens":100,"completion_tokens":20,"prompt_cache_hit_tokens":50}}`, `{"usage":{"prompt_tokens":100,"completion_tokens":20,"prompt_tokens_details":{"cached_tokens":50}}}`, `{"response":{"usage":{"input_tokens":100,"output_tokens":20,"input_tokens_details":{"cached_tokens":50}}}}`} {
+	for _, raw := range []string{`{"usage":{"prompt_tokens":100,"completion_tokens":20,"prompt_cache_hit_tokens":50}}`, `{"usage":{"prompt_tokens":100,"completion_tokens":20,"prompt_tokens_details":{"cached_tokens":50}}}`, `{"usage":{"prompt_tokens":100,"completion_tokens":20,"prompt_tokens_details":{"cached_read_tokens":50}}}`, `{"response":{"usage":{"input_tokens":100,"output_tokens":20,"input_tokens_details":{"cached_tokens":50}}}}`} {
 		u := parseUsage([]byte(raw))
 		if !u.cachedKnown || u.cached != 50 || usageCostMicros(p, u) != 100 {
 			t.Fatalf("wrong cached usage: %+v", u)
@@ -149,5 +149,26 @@ func TestCacheUsageAndCost(t *testing.T) {
 	u := parseUsage([]byte(`{"usage":{"prompt_tokens":100,"completion_tokens":20,"prompt_cache_hit_tokens":101}}`))
 	if u.cachedKnown || usageCostMicros(p, u) != 140 {
 		t.Fatal("invalid cached usage must use conservative miss price")
+	}
+}
+
+func TestCacheWritesAreVisibleButNeverReadDiscounts(t *testing.T) {
+	p := tariffProfile().priceAt(instant("2026-09-28T00:00:00Z"))
+	for _, raw := range []string{
+		`{"usage":{"prompt_tokens":100,"completion_tokens":20,"prompt_tokens_details":{"cached_read_tokens":20,"cached_write_tokens":30}}}`,
+		`{"usage":{"input_tokens":100,"output_tokens":20,"input_tokens_details":{"cached_tokens":20,"cache_write_tokens":30}}}`,
+	} {
+		u := parseUsage([]byte(raw))
+		if !u.known || !u.cachedKnown || !u.cacheWriteKnown || u.cached != 20 || u.cacheWrite != 30 || !usageEstimated(p, u) {
+			t.Fatal("cache writes must remain estimated without a supported write tariff", u)
+		}
+	}
+	for _, raw := range []string{
+		`{"usage":{"input_tokens":100,"output_tokens":20,"input_tokens_details":{"cached_tokens":20,"cache_write_tokens":81}}}`,
+		`{"usage":{"input_tokens":100,"output_tokens":20,"input_tokens_details":{"cache_write_tokens":-1}}}`,
+	} {
+		if u := parseUsage([]byte(raw)); u.known {
+			t.Fatal("invalid writes accepted", u)
+		}
 	}
 }

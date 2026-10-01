@@ -1,6 +1,21 @@
 import { z } from "zod";
 
 const id = z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,63}$/, "使用字母、数字、点、短横线或下划线，最多 64 字符");
+export const hubEstimateSchema = z.object({
+	scene: z.string().min(1, "请选择业务场景"),
+	request: z
+		.string()
+		.min(1, "请输入请求 JSON")
+		.max(1048576)
+		.refine((value) => {
+			try {
+				const body = JSON.parse(value);
+				return typeof body === "object" && body !== null && !Array.isArray(body);
+			} catch {
+				return false;
+			}
+		}, "请求必须是有效的 JSON 对象"),
+});
 const money = z.number().min(0, "不能为负数").max(1000000);
 const timezone = z.string().refine((v) => {
 	try {

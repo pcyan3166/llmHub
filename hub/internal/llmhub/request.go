@@ -195,28 +195,38 @@ func textOnly(body map[string]json.RawMessage, endpoint string) error {
 }
 
 type tokenUsage struct {
-	input       int64
-	output      int64
-	known       bool
-	cached      int64
-	cachedKnown bool
+	input           int64
+	output          int64
+	outputKnown     bool
+	known           bool
+	cached          int64
+	cachedKnown     bool
+	cacheWrite      int64
+	cacheWriteKnown bool
+}
+
+func usageEstimated(p Profile, u tokenUsage) bool {
+	return !u.known || p.CachedInputUSDPerMillion != nil && !u.cachedKnown || u.cacheWrite > 0
+}
+
+type cacheDetails struct {
+	Cached       *int64 `json:"cached_tokens"`
+	Read         *int64 `json:"cached_read_tokens"`
+	Write        *int64 `json:"cache_write_tokens"`
+	BifrostWrite *int64 `json:"cached_write_tokens"`
 }
 
 func parseUsage(raw []byte) tokenUsage {
 	var payload struct {
 		Usage *struct {
-			Prompt        *int64 `json:"prompt_tokens"`
-			Completion    *int64 `json:"completion_tokens"`
-			Input         *int64 `json:"input_tokens"`
-			Output        *int64 `json:"output_tokens"`
-			Total         *int64 `json:"total_tokens"`
-			CacheHit      *int64 `json:"prompt_cache_hit_tokens"`
-			PromptDetails *struct {
-				Cached *int64 `json:"cached_tokens"`
-			} `json:"prompt_tokens_details"`
-			InputDetails *struct {
-				Cached *int64 `json:"cached_tokens"`
-			} `json:"input_tokens_details"`
+			Prompt        *int64        `json:"prompt_tokens"`
+			Completion    *int64        `json:"completion_tokens"`
+			Input         *int64        `json:"input_tokens"`
+			Output        *int64        `json:"output_tokens"`
+			Total         *int64        `json:"total_tokens"`
+			CacheHit      *int64        `json:"prompt_cache_hit_tokens"`
+			PromptDetails *cacheDetails `json:"prompt_tokens_details"`
+			InputDetails  *cacheDetails `json:"input_tokens_details"`
 		} `json:"usage"`
 		Response json.RawMessage `json:"response"`
 	}
@@ -242,8 +252,10 @@ func parseUsage(raw []byte) tokenUsage {
 	}
 	if u.Completion != nil {
 		result.output = *u.Completion
+		result.outputKnown = true
 	} else if u.Output != nil {
 		result.output = *u.Output
+		result.outputKnown = true
 	}
 	if result.input < 0 || result.output < 0 || result.input > 1000000000 || result.output > 1000000000 {
 		return tokenUsage{}
@@ -251,13 +263,35 @@ func parseUsage(raw []byte) tokenUsage {
 	cached := u.CacheHit
 	if cached == nil && u.PromptDetails != nil {
 		cached = u.PromptDetails.Cached
+		if cached == nil {
+			cached = u.PromptDetails.Read
+		}
 	}
 	if cached == nil && u.InputDetails != nil {
 		cached = u.InputDetails.Cached
+		if cached == nil {
+			cached = u.InputDetails.Read
+		}
 	}
 	if cached != nil && *cached >= 0 && *cached <= result.input {
 		result.cached = *cached
 		result.cachedKnown = true
+	}
+	for _, details := range []*cacheDetails{u.PromptDetails, u.InputDetails} {
+		if details == nil {
+			continue
+		}
+		write := details.Write
+		if write == nil {
+			write = details.BifrostWrite
+		}
+		if write != nil {
+			if *write < 0 || *write > result.input-result.cached {
+				return tokenUsage{}
+			}
+			result.cacheWrite, result.cacheWriteKnown = *write, true
+			break
+		}
 	}
 	return result
 }

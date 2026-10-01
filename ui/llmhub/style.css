@@ -680,10 +680,36 @@ pre {
 	line-height: 1.8;
 	font-size: 12px;
 }
+.estimate-form {
+	display: grid;
+	gap: 14px;
+}
+.estimate-form label {
+	display: grid;
+	gap: 6px;
+}
+.estimate-form textarea {
+	width: 100%;
+	resize: vertical;
+	font-family: monospace;
+	border: 1px solid #dce1dd;
+	border-radius: 4px;
+	padding: 10px;
+}
+.estimate-result {
+	border-top: 1px solid #dce1dd;
+	margin-top: 18px;
+	padding-top: 12px;
+}
 .request-detail {
 	grid-template-columns: 130px minmax(0, 1fr);
 	font-size: 11px;
 	gap: 14px;
+}
+.prediction-detail + .request-detail {
+	border-top: 1px solid #dce1dd;
+	margin-top: 18px;
+	padding-top: 18px;
 }
 .mobile-toggle {
 	display: none;

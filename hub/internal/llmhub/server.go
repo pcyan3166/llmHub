@@ -161,6 +161,8 @@ func (s *Server) admin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	switch {
+	case r.URL.Path == "/api/llmhub/estimate" && r.Method == "POST":
+		s.estimate(w, r)
 	case r.URL.Path == "/api/llmhub/config" && r.Method == "GET":
 		s.configMu.RLock()
 		defer s.configMu.RUnlock()
@@ -408,6 +410,12 @@ func (s *Server) inference(w http.ResponseWriter, r *http.Request) {
 			}
 			attempt := Attempt{ID: attemptID, RequestID: requestID, ProjectID: projectID, SceneID: scene.ID, ProfileID: profile.ID, PoolID: profile.PoolID, Provider: profile.Provider, Model: profile.Model, InputTokens: input, OutputTokens: output, QueueMS: queueMS, PriceSnapshot: &profile}
 			reserve := costMicros(profile, input, output)
+			attempt.Prediction, err = s.store.predict(projectID, scene.ID, scene.Endpoint, s.upstream.String(), profile, body, input, output, pricedAt)
+			if err != nil {
+				lease.Finish(0)
+				s.fail(w, err)
+				return
+			}
 			// Recheck the project after waiting so disabling it immediately stops queued traffic.
 			current, exists := s.snapshot().Project(projectID)
 			if !exists || !current.Enabled {
@@ -431,7 +439,12 @@ func (s *Server) inference(w http.ResponseWriter, r *http.Request) {
 			}
 			startedAt := time.Now()
 			attemptsUsed[profileID]++
-			req, _ := http.NewRequestWithContext(ctx, "POST", strings.TrimRight(s.upstream.String(), "/")+"/openai"+scene.Endpoint, bytes.NewReader(body))
+			nativeCache := profile.Provider == "deepseek" && scene.Endpoint == "/v1/chat/completions"
+			prefix := "/openai"
+			if nativeCache {
+				prefix = ""
+			}
+			req, _ := http.NewRequestWithContext(ctx, "POST", strings.TrimRight(s.upstream.String(), "/")+prefix+scene.Endpoint, bytes.NewReader(body))
 			req.Header.Set("Content-Type", "application/json")
 			req.Header.Set("X-BF-API-Key", profile.KeyName)
 			req.Header.Set("X-Request-ID", requestID)
@@ -464,7 +477,7 @@ func (s *Server) inference(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("X-LLMHub-Queue-MS", strconv.FormatInt(queueMS, 10))
 			w.Header().Set("X-LLMHub-Price-Window", profile.AppliedPrice.WindowID)
 			if stream && resp.StatusCode >= 200 && resp.StatusCode < 300 && strings.Contains(resp.Header.Get("Content-Type"), "text/event-stream") {
-				s.stream(w, resp, lease, attemptID, profile, input, output, reserve, startedAt)
+				s.stream(w, resp, lease, attemptID, profile, input, output, reserve, startedAt, nativeCache)
 				return
 			}
 			responseRaw, readErr := io.ReadAll(io.LimitReader(resp.Body, (8<<20)+1))
@@ -476,12 +489,24 @@ func (s *Server) inference(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			usage := parseUsage(responseRaw)
-			estimated := !usage.known || profile.CachedInputUSDPerMillion != nil && !usage.cachedKnown
+			if nativeCache {
+				responseRaw = normalizeCacheUsage(responseRaw)
+				usage = parseUsage(responseRaw)
+			}
+			if output > 0 && !usage.outputKnown {
+				usage.known = false
+			}
+			estimated := usageEstimated(profile, usage)
 			if usage.known {
 				input, output = usage.input, usage.output
-				reserve = usageCostMicros(profile, usage)
+				if usage.cacheWrite == 0 {
+					reserve = usageCostMicros(profile, usage)
+				}
 				profile.AppliedPrice.CachedInputTokens = usage.cached
 				profile.AppliedPrice.CacheUsageKnown = usage.cachedKnown
+				profile.AppliedPrice.UsageKnown = true
+				profile.AppliedPrice.CacheWriteTokens = usage.cacheWrite
+				profile.AppliedPrice.CacheWriteUsageKnown = usage.cacheWriteKnown
 			} else if resp.StatusCode >= 400 {
 				input, output, reserve = 0, 0, 0
 			}
@@ -530,7 +555,7 @@ func (s *Server) settle(id, status string, httpStatus int, input, output, cost i
 	}
 }
 
-func (s *Server) stream(w http.ResponseWriter, resp *http.Response, lease *Lease, id string, p Profile, input, output, reserve int64, started time.Time) {
+func (s *Server) stream(w http.ResponseWriter, resp *http.Response, lease *Lease, id string, p Profile, input, output, reserve int64, started time.Time, nativeCache bool) {
 	defer resp.Body.Close()
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("X-Accel-Buffering", "no")
@@ -538,10 +563,14 @@ func (s *Server) stream(w http.ResponseWriter, resp *http.Response, lease *Lease
 	controller := http.NewResponseController(w)
 	_ = controller.Flush()
 	tracker := usageTracker{}
+	var reader io.Reader = resp.Body
+	if nativeCache {
+		reader = newCacheUsageReader(resp.Body)
+	}
 	buffer := make([]byte, 16<<10)
 	status := "success"
 	for {
-		n, err := resp.Body.Read(buffer)
+		n, err := reader.Read(buffer)
 		if n > 0 {
 			tracker.Write(buffer[:n])
 			_ = controller.SetWriteDeadline(time.Now().Add(30 * time.Second))
@@ -562,15 +591,23 @@ func (s *Server) stream(w http.ResponseWriter, resp *http.Response, lease *Lease
 		}
 	}
 	tracker.consume()
+	if output > 0 && !tracker.usage.outputKnown {
+		tracker.usage.known = false
+	}
 	if status == "success" && (!tracker.terminal || tracker.failed) {
 		status = "stream_error"
 	}
-	estimated := !tracker.usage.known || status != "success" || p.CachedInputUSDPerMillion != nil && !tracker.usage.cachedKnown
+	estimated := usageEstimated(p, tracker.usage) || status != "success"
 	if tracker.usage.known && status == "success" {
 		input, output = tracker.usage.input, tracker.usage.output
-		reserve = usageCostMicros(p, tracker.usage)
+		if tracker.usage.cacheWrite == 0 {
+			reserve = usageCostMicros(p, tracker.usage)
+		}
 		p.AppliedPrice.CachedInputTokens = tracker.usage.cached
 		p.AppliedPrice.CacheUsageKnown = tracker.usage.cachedKnown
+		p.AppliedPrice.UsageKnown = true
+		p.AppliedPrice.CacheWriteTokens = tracker.usage.cacheWrite
+		p.AppliedPrice.CacheWriteUsageKnown = tracker.usage.cacheWriteKnown
 	}
 	lease.Finish(input + output)
 	s.settle(id, status, resp.StatusCode, input, output, reserve, started, estimated, &p)

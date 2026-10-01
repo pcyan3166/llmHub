@@ -25,6 +25,7 @@ import {
 	Server,
 	ShieldCheck,
 	Globe,
+	Calculator,
 } from "lucide-react";
 import {
 	api,
@@ -41,6 +42,7 @@ import {
 } from "./api";
 import { Editor, Modal } from "./views/editor";
 import { CatalogView } from "./views/catalog";
+import { EstimateModal, PredictionDetails } from "./views/estimate";
 import type { Entity, Config, Attempt } from "./types";
 import "./style.css";
 
@@ -78,6 +80,7 @@ function App() {
 	const [copied, setCopied] = useState(false);
 	const [notice, setNotice] = useState("");
 	const [selected, setSelected] = useState<Attempt>();
+	const [estimating, setEstimating] = useState(false);
 	const [revoke, setRevoke] = useState<string>();
 	const configQuery = useConfigQuery(undefined, { skip: !token, pollingInterval: 30000, skipPollingIfUnfocused: true });
 	const pricingQuery = usePricingQuery(undefined, {
@@ -223,6 +226,7 @@ function App() {
 							<td>
 								{usd(r.cost_usd)}
 								{r.estimated && <small>估算</small>}
+								{r.prediction && <small>调用前 {usd(r.prediction.cost_usd)}</small>}
 							</td>
 							<td>
 								{r.queue_ms} / {r.duration_ms} ms
@@ -413,6 +417,17 @@ function App() {
 													data-testid="hub-search"
 												/>
 											</div>
+										)}
+										{page === "requests" && (
+											<button
+												className="icon"
+												title="调用前成本预估"
+												aria-label="调用前成本预估"
+												onClick={() => setEstimating(true)}
+												data-testid="hub-estimate-open"
+											>
+												<Calculator size={18} />
+											</button>
 										)}
 									</div>
 								)}
@@ -1003,8 +1018,10 @@ function App() {
 					</footer>
 				</Modal>
 			)}
+			{estimating && config && <EstimateModal config={config} onClose={() => setEstimating(false)} />}
 			{selected && (
 				<Modal title="请求详情" onClose={() => setSelected(undefined)}>
+					{selected.prediction && <PredictionDetails prediction={selected.prediction} />}
 					<dl className="request-detail">
 						{selected.price_snapshot?.applied_price && (
 							<>
@@ -1020,14 +1037,22 @@ function App() {
 										? number(selected.price_snapshot.applied_price.cached_input_tokens)
 										: "未返回缓存用量"}
 								</dd>
+								<dt>缓存写入 Token</dt>
+								<dd>
+									{selected.price_snapshot.applied_price.cache_write_usage_known
+										? number(selected.price_snapshot.applied_price.cache_write_tokens ?? 0)
+										: "未返回写入用量"}
+								</dd>
 							</>
 						)}
-						{Object.entries(selected).map(([key, value]) => (
-							<React.Fragment key={key}>
-								<dt>{key}</dt>
-								<dd>{typeof value === "object" ? JSON.stringify(value, null, 2) : String(value)}</dd>
-							</React.Fragment>
-						))}
+						{Object.entries(selected)
+							.filter(([key]) => key !== "prediction")
+							.map(([key, value]) => (
+								<React.Fragment key={key}>
+									<dt>{key}</dt>
+									<dd>{typeof value === "object" ? JSON.stringify(value, null, 2) : String(value)}</dd>
+								</React.Fragment>
+							))}
 					</dl>
 					<footer>
 						<button onClick={() => copy(selected.request_id)}>

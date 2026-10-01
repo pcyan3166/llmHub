@@ -28,15 +28,18 @@ type PriceWindow struct {
 }
 
 type AppliedPrice struct {
-	Label              string     `json:"label"`
-	WindowID           string     `json:"window_id"`
-	Timezone           string     `json:"timezone"`
-	PricedAt           time.Time  `json:"priced_at"`
-	CachedInputTokens  int64      `json:"cached_input_tokens"`
-	CacheUsageKnown    bool       `json:"cache_usage_known"`
-	OfficialSourceURL  string     `json:"official_source_url,omitempty"`
-	OfficialSourceHash string     `json:"official_source_hash,omitempty"`
-	OfficialVerifiedAt *time.Time `json:"official_verified_at,omitempty"`
+	Label                string     `json:"label"`
+	WindowID             string     `json:"window_id"`
+	Timezone             string     `json:"timezone"`
+	PricedAt             time.Time  `json:"priced_at"`
+	CachedInputTokens    int64      `json:"cached_input_tokens"`
+	CacheUsageKnown      bool       `json:"cache_usage_known"`
+	UsageKnown           bool       `json:"usage_known"`
+	CacheWriteTokens     int64      `json:"cache_write_tokens"`
+	CacheWriteUsageKnown bool       `json:"cache_write_usage_known"`
+	OfficialSourceURL    string     `json:"official_source_url,omitempty"`
+	OfficialSourceHash   string     `json:"official_source_hash,omitempty"`
+	OfficialVerifiedAt   *time.Time `json:"official_verified_at,omitempty"`
 }
 
 func clockMinute(value string, end bool) (int, error) {

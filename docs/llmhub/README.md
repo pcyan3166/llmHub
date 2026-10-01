@@ -149,7 +149,23 @@ Python 客户端位于 `hub/sdk/python/llmhub.py`，使用标准库，无额外�
 
 缓存用量兼容 DeepSeek `prompt_cache_hit_tokens`、OpenAI `prompt_tokens_details.cached_tokens` 和 Responses `input_tokens_details.cached_tokens`。只有返回有效缓存用量且配置缓存单价时，才按“未缓存输入 × 输入价 + 缓存输入 × 缓存价 + 输出 × 输出价”结算。配置缓存价但供应商没有返回缓存用量时，按全部未缓存输入保守估算并标注“估算”。预算预留与成本路由不假设缓存一定命中。
 
-已测官方 Bifrost v2.2.4 的规范化响应不保留 DeepSeek 专有缓存字段。以 llmHub 实际收到的 usage 为准；字段缺失时绝不假装缓存用量已知，也不从请求内容猜测命中数，因此该版本下 DeepSeek 缓存费用会保守估算，而峰谷时段仍正确应用。`native.mjs` 会报告所测版本是否保留字段，并分别验证正常缓存计费与缺失时的保守估算。
+官方 Bifrost v2.2.4 的 OpenAI 兼容转换会丢弃 DeepSeek 专有缓存字段。llmHub 对 DeepSeek Chat 改用私有 Bifrost 原生路由，仅合并输入 / 输出计数一致且有效的原始缓存 usage，随后删除内部 `extra_fields`，普通响应和 SSE 都保留客户端兼容的缓存字段。需在 Bifrost 的 `providers.deepseek` 设置 `send_back_raw_response:true`、`send_back_raw_request:false`、`store_raw_request_response:false`；示例见 `deploy/llmhub/bifrost.deepseek.example.json`。Bifrost 必须保持私有、不能直接暴露给业务客户端，并保持 `allow_per_request_raw_override:false`。没有原始缓存数据时仍保守估算，绝不由请求文本猜测实际命中数。`native.mjs` 已对官方 v2.2.4 验证普通 / SSE 命中数与私有信封移除。
+
+### 调用前成本预测
+
+“请求记录”右侧计算器提供成本预估，管理员接口为 `POST /api/llmhub/estimate`：
+
+```json
+{"project_id":"storepilot","scene_id":"text.generate","request":{"messages":[{"role":"user","content":"hello"}]}}
+```
+
+预估不调用供应商、不入队、不计费，也不修改配置。每个已批准且官网价格验证通过的候选返回预测费用、未命中预计费用、保守预留额、缓存概率、成本 / 缓存置信度与样本量。实际派发时重新以当前时段价格冻结预测；请求详情显示原始预测以及“实际费用减预测费用”，历史预测不会被后续改价覆盖。`lowest_cost` 路由和预算仍按保守上限，不使用预测折扣。
+
+首版只匹配完全相同请求（忽略 `stream` 和服务端补充的流式 usage 参数），不做语义相似或部分前缀推断。证据按项目、场景、接口、Bifrost 地址、供应商、模型、`key_name` 和限额池隔离。只保存带随机持久化密钥的 HMAC 指纹和数字用量，不保存 prompt / 响应内容；SQLite 仍包含业务密钥哈希及其他敏感配置，应按现有要求保护及备份。上游密钥轮换 / 账户切换需更换 `key_name` 或使用新限额池，网关无法从同名别名感知供应商账户变更。
+
+仅成功且用量完整的调用进入最近 32 条样本；中断、重试、失败和缺失用量不训练。输入 / 输出参考最多 30 天的相同请求历史，无历史使用保守上限。缓存只参考完成 5 秒以上、5 分钟以内的明确用量，至少 3 条才报告经平滑的命中概率；最新用量未知或证据过期时取消折扣。5 分钟是本地证据窗口，不是供应商 TTL，也不是保证缓存命中。置信度低于 10 条为低、10–29 条为中、30 条以上为高；输出波动较大时成本置信度降为低。这是启发式样本等级，不是统计覆盖率承诺。参考 [DeepSeek 缓存说明](https://api-docs.deepseek.com/guides/kv_cache/)和 [OpenAI 缓存说明](https://developers.openai.com/api/docs/guides/prompt-caching)。
+
+用量解析也支持 Bifrost `cached_read_tokens`，并单独展示 `cache_write_tokens` / `cached_write_tokens`。写入不算作读取命中；由于尚未支持写入单价及存储费，当供应商报告非零写入时仍保留原预算预留额作为估算费用，不宣称精确结算，也不据此学习缓存折扣。缺失完整输入 / 输出用量的文本请求同样保留预留额。响应级缓存未启用，本预测不会复用生成内容。
 
 场景 `routing_policy` 默认是 `ordered`，保持配置順序。选择 `lowest_cost` 后，每次选路和排队结束都在该场景管理员已批准的候选 Profile 中比较当前预估费用；费用包含保守输入估计和各 Profile / 请求允许的输出上限，相同费用保留原顺序。排队期间赢家变化时释放原并发槽并进入新候选的 FIFO 队列，仍受请求总超时约束；限额统计保守记录已取得的队列准入。备用切换也按剩余候选的当前价格选择，不会重试已耗尽的候选。
 

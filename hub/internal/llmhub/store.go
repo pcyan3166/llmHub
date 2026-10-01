@@ -21,9 +21,10 @@ var ErrBudget = errors.New("monthly project budget exhausted")
 var ErrConflict = errors.New("configuration changed; reload before saving")
 
 type Store struct {
-	db   *sql.DB
-	mu   sync.Mutex
-	lock *os.File
+	db            *sql.DB
+	mu            sync.Mutex
+	lock          *os.File
+	predictionKey []byte
 }
 
 type Key struct {
@@ -35,24 +36,25 @@ type Key struct {
 }
 
 type Attempt struct {
-	ID            string   `json:"id"`
-	RequestID     string   `json:"request_id"`
-	ProjectID     string   `json:"project_id"`
-	SceneID       string   `json:"scene_id"`
-	ProfileID     string   `json:"profile_id"`
-	PoolID        string   `json:"pool_id"`
-	Provider      string   `json:"provider"`
-	Model         string   `json:"model"`
-	Status        string   `json:"status"`
-	HTTPStatus    int      `json:"http_status"`
-	InputTokens   int64    `json:"input_tokens"`
-	OutputTokens  int64    `json:"output_tokens"`
-	CostUSD       float64  `json:"cost_usd"`
-	Estimated     bool     `json:"estimated"`
-	QueueMS       int64    `json:"queue_ms"`
-	DurationMS    int64    `json:"duration_ms"`
-	CreatedAt     string   `json:"created_at"`
-	PriceSnapshot *Profile `json:"price_snapshot,omitempty"`
+	ID            string          `json:"id"`
+	RequestID     string          `json:"request_id"`
+	ProjectID     string          `json:"project_id"`
+	SceneID       string          `json:"scene_id"`
+	ProfileID     string          `json:"profile_id"`
+	PoolID        string          `json:"pool_id"`
+	Provider      string          `json:"provider"`
+	Model         string          `json:"model"`
+	Status        string          `json:"status"`
+	HTTPStatus    int             `json:"http_status"`
+	InputTokens   int64           `json:"input_tokens"`
+	OutputTokens  int64           `json:"output_tokens"`
+	CostUSD       float64         `json:"cost_usd"`
+	Estimated     bool            `json:"estimated"`
+	QueueMS       int64           `json:"queue_ms"`
+	DurationMS    int64           `json:"duration_ms"`
+	CreatedAt     string          `json:"created_at"`
+	PriceSnapshot *Profile        `json:"price_snapshot,omitempty"`
+	Prediction    *CostPrediction `json:"prediction,omitempty"`
 }
 
 type ProjectUsage struct {
@@ -95,6 +97,10 @@ CREATE TABLE IF NOT EXISTS attempts (id TEXT PRIMARY KEY, request_id TEXT NOT NU
 CREATE INDEX IF NOT EXISTS attempts_project_month ON attempts(project_id,month);
 CREATE INDEX IF NOT EXISTS attempts_created ON attempts(created_at);
 CREATE TABLE IF NOT EXISTS attempt_prices (attempt_id TEXT PRIMARY KEY, profile TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS prediction_secret (id INTEGER PRIMARY KEY CHECK(id=1), secret BLOB NOT NULL);
+CREATE TABLE IF NOT EXISTS attempt_predictions (attempt_id TEXT PRIMARY KEY, scope TEXT NOT NULL, fingerprint TEXT NOT NULL, prediction TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS prediction_observations (attempt_id TEXT PRIMARY KEY, scope TEXT NOT NULL, fingerprint TEXT NOT NULL, at_ms INTEGER NOT NULL, input_tokens INTEGER NOT NULL, output_tokens INTEGER NOT NULL, cached_tokens INTEGER NOT NULL, cache_known INTEGER NOT NULL);
+CREATE INDEX IF NOT EXISTS prediction_lookup ON prediction_observations(scope,fingerprint,at_ms);
 CREATE TABLE IF NOT EXISTS monthly_usage (project_id TEXT NOT NULL, month TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0, input_tokens INTEGER NOT NULL DEFAULT 0, output_tokens INTEGER NOT NULL DEFAULT 0, cost_micros INTEGER NOT NULL DEFAULT 0, reserved_micros INTEGER NOT NULL DEFAULT 0, errors INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(project_id,month));
 CREATE TABLE IF NOT EXISTS rate_events (id TEXT PRIMARY KEY, pool_id TEXT NOT NULL, at_ms INTEGER NOT NULL, tokens INTEGER NOT NULL);
 CREATE INDEX IF NOT EXISTS rate_events_time ON rate_events(at_ms);
@@ -110,6 +116,17 @@ COMMIT;
 	if err = os.Chmod(path, 0600); err != nil {
 		s.Close()
 		return nil, err
+	}
+	secret := make([]byte, 32)
+	if _, err = rand.Read(secret); err == nil {
+		_, err = db.Exec("INSERT OR IGNORE INTO prediction_secret VALUES(1,?)", secret)
+	}
+	if err == nil {
+		err = db.QueryRow("SELECT secret FROM prediction_secret WHERE id=1").Scan(&s.predictionKey)
+	}
+	if err != nil || len(s.predictionKey) != 32 {
+		s.Close()
+		return nil, fmt.Errorf("initialize prediction fingerprint key: %v", err)
 	}
 	return s, nil
 }
@@ -258,6 +275,15 @@ func (s *Store) Reserve(a Attempt, budget float64, reserve int64) error {
 			return err
 		}
 	}
+	if a.Prediction != nil {
+		raw, err := json.Marshal(a.Prediction)
+		if err != nil {
+			return err
+		}
+		if _, err = tx.Exec("INSERT INTO attempt_predictions VALUES(?,?,?,?)", a.ID, a.Prediction.scope, a.Prediction.fingerprint, string(raw)); err != nil {
+			return err
+		}
+	}
 	if _, err = tx.Exec("UPDATE monthly_usage SET attempts=attempts+1,reserved_micros=reserved_micros+? WHERE project_id=? AND month=?", reserve, a.ProjectID, month); err != nil {
 		return err
 	}
@@ -303,12 +329,38 @@ func (s *Store) Settle(id, status string, httpStatus int, input, output, cost, d
 		if _, err = tx.Exec("UPDATE attempt_prices SET profile=? WHERE attempt_id=?", string(raw), id); err != nil {
 			return err
 		}
+		if status == "success" && snapshots[0].AppliedPrice != nil && snapshots[0].AppliedPrice.UsageKnown {
+			price := snapshots[0].AppliedPrice
+			if _, err = tx.Exec(`INSERT OR IGNORE INTO prediction_observations SELECT attempt_id,scope,fingerprint,?,?,?,?,? FROM attempt_predictions WHERE attempt_id=?`, time.Now().UnixMilli(), input, output, price.CachedInputTokens, price.CacheUsageKnown && price.CacheWriteTokens == 0, id); err != nil {
+				return err
+			}
+			var predictionRaw string
+			err = tx.QueryRow("SELECT prediction FROM attempt_predictions WHERE attempt_id=?", id).Scan(&predictionRaw)
+			if err != nil && err != sql.ErrNoRows {
+				return err
+			}
+			if err == nil && !estimated {
+				var prediction CostPrediction
+				if err = json.Unmarshal([]byte(predictionRaw), &prediction); err != nil {
+					return err
+				}
+				difference := float64(cost)/1e6 - prediction.CostUSD
+				prediction.ErrorUSD = &difference
+				raw, err = json.Marshal(prediction)
+				if err != nil {
+					return err
+				}
+				if _, err = tx.Exec("UPDATE attempt_predictions SET prediction=? WHERE attempt_id=?", string(raw), id); err != nil {
+					return err
+				}
+			}
+		}
 	}
 	return tx.Commit()
 }
 
 func (s *Store) Recent(project string, limit int) ([]Attempt, error) {
-	rows, err := s.db.Query(`SELECT id,request_id,project_id,scene_id,profile_id,pool_id,provider,model,status,http_status,input_tokens,output_tokens,cost_micros,estimated,queue_ms,duration_ms,created_at,COALESCE((SELECT profile FROM attempt_prices WHERE attempt_id=attempts.id),'null') FROM attempts WHERE (?='' OR project_id=?) ORDER BY created_at DESC LIMIT ?`, project, project, limit)
+	rows, err := s.db.Query(`SELECT id,request_id,project_id,scene_id,profile_id,pool_id,provider,model,status,http_status,input_tokens,output_tokens,cost_micros,estimated,queue_ms,duration_ms,created_at,COALESCE((SELECT profile FROM attempt_prices WHERE attempt_id=attempts.id),'null'),COALESCE((SELECT prediction FROM attempt_predictions WHERE attempt_id=attempts.id),'null') FROM attempts WHERE (?='' OR project_id=?) ORDER BY created_at DESC LIMIT ?`, project, project, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -318,10 +370,14 @@ func (s *Store) Recent(project string, limit int) ([]Attempt, error) {
 		var a Attempt
 		var cost int64
 		var snapshot string
-		if err = rows.Scan(&a.ID, &a.RequestID, &a.ProjectID, &a.SceneID, &a.ProfileID, &a.PoolID, &a.Provider, &a.Model, &a.Status, &a.HTTPStatus, &a.InputTokens, &a.OutputTokens, &cost, &a.Estimated, &a.QueueMS, &a.DurationMS, &a.CreatedAt, &snapshot); err != nil {
+		var prediction string
+		if err = rows.Scan(&a.ID, &a.RequestID, &a.ProjectID, &a.SceneID, &a.ProfileID, &a.PoolID, &a.Provider, &a.Model, &a.Status, &a.HTTPStatus, &a.InputTokens, &a.OutputTokens, &cost, &a.Estimated, &a.QueueMS, &a.DurationMS, &a.CreatedAt, &snapshot, &prediction); err != nil {
 			return nil, err
 		}
 		if err := json.Unmarshal([]byte(snapshot), &a.PriceSnapshot); err != nil {
+			return nil, err
+		}
+		if err := json.Unmarshal([]byte(prediction), &a.Prediction); err != nil {
 			return nil, err
 		}
 		a.CostUSD = float64(cost) / 1e6
@@ -421,6 +477,12 @@ func (s *Store) PruneRates() error {
 	}
 	if err == nil {
 		_, err = s.db.Exec("DELETE FROM attempt_prices WHERE attempt_id NOT IN (SELECT id FROM attempts)")
+	}
+	if err == nil {
+		_, err = s.db.Exec("DELETE FROM attempt_predictions WHERE attempt_id NOT IN (SELECT id FROM attempts)")
+	}
+	if err == nil {
+		_, err = s.db.Exec("DELETE FROM prediction_observations WHERE at_ms<?", time.Now().AddDate(0, 0, -30).UnixMilli())
 	}
 	return err
 }

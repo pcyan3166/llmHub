@@ -40,6 +40,30 @@ try {
   // UI contract fixtures are isolated from real official-page polling; backend sync is covered by Go tests.
   const catalogConfig = await (await page.request.get(`${url}/api/llmhub/config`, { headers })).json();
   const liveCatalog = await (await page.request.get(`${url}/api/llmhub/catalog`, { headers })).json();
+  const estimateScene = catalogConfig.config.scenes.find((s) => s.endpoint === "/v1/chat/completions" && catalogConfig.config.projects.some((p) => p.id === s.project_id && p.enabled));
+  assert.ok(estimateScene, "preview needs an enabled text scene");
+  const estimateConfigVersion = catalogConfig.version;
+  const usageBeforeEstimate = await (await page.request.get(`${url}/api/llmhub/overview`, { headers })).json();
+  await page.getByTestId("hub-nav-requests").click();
+  await page.getByTestId("hub-estimate-open").click();
+  await page.getByTestId("hub-estimate-scene").selectOption(`${estimateScene.project_id}/${estimateScene.id}`);
+  await page.getByTestId("hub-estimate-request").fill("invalid JSON");
+  await page.getByTestId("hub-estimate-submit").click();
+  await page.getByRole("alert").getByText("请求必须是有效的 JSON 对象").waitFor();
+  const estimateBody = { model: estimateScene.id, messages: [{ role: "user", content: "QA prediction only; no inference" }] };
+  await page.getByTestId("hub-estimate-request").fill(JSON.stringify(estimateBody, null, 2));
+  await page.getByTestId("hub-estimate-submit").click();
+  await page.getByTestId("hub-prediction-details").first().waitFor();
+  await page.locator("dialog").getByText("预算保守预留", { exact: true }).first().waitFor();
+  await page.screenshot({ path: path.join(output, "desktop-prediction.png") });
+  await page.setViewportSize({ width: 390, height: 844 });
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth + 1), false, "mobile prediction overflow");
+  await page.screenshot({ path: path.join(output, "mobile-prediction.png") });
+  await page.getByTestId("hub-estimate-close").click();
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  const usageAfterEstimate = await (await page.request.get(`${url}/api/llmhub/overview`, { headers })).json();
+  assert.deepEqual(usageAfterEstimate.usage, usageBeforeEstimate.usage, "cost preview must not bill or dispatch models");
+  assert.equal((await (await page.request.get(`${url}/api/llmhub/config`, { headers })).json()).version, estimateConfigVersion, "cost preview must not modify config");
   assert.deepEqual(liveCatalog.sources.map((s) => s.provider), ["deepseek", "openai", "anthropic", "glm", "minimax", "kimi", "gemini", "qwen"]);
   await page.getByTestId("hub-nav-catalog").click();
   for (const provider of ["glm", "minimax", "kimi", "gemini", "qwen"]) await page.getByTestId(`hub-catalog-source-${provider}`).waitFor();
@@ -212,6 +236,18 @@ try {
   await page.locator("dialog").waitFor({ state: "hidden" });
   const rejected = await page.request.post(`${url}/v1/chat/completions`, { headers: { Authorization: `Bearer ${secret}` }, data: { model: "scene/text.generate", messages: [{ role: "user", content: "revoked" }] } });
   assert.equal(rejected.status(), 401);
+  const ledger = await (await page.request.get(`${url}/api/llmhub/overview`, { headers })).json();
+  const predictedAttempt = ledger.recent.find((a) => a.scene_id === "text.generate" && a.prediction);
+  assert.ok(predictedAttempt, "new inference must retain a pre-call prediction");
+  await page.getByTestId("hub-nav-requests").click();
+  await page.getByTestId("hub-refresh").click();
+  await page.getByTestId("hub-search").fill(predictedAttempt.request_id);
+  await page.getByTestId("hub-request-row").first().click();
+  await page.getByTestId("hub-prediction-details").waitFor();
+  await page.getByText("实际费用减预测费用", { exact: true }).waitFor();
+  await page.screenshot({ path: path.join(output, "desktop-request-prediction.png") });
+  await page.locator("dialog").getByTitle("关闭", { exact: true }).click();
+  await page.getByTestId("hub-search").fill("");
   await page.getByTestId("hub-nav-overview").click();
   await page.setViewportSize({ width: 390, height: 844 });
   await page.screenshot({ path: path.join(output, "mobile-overview.png") });
@@ -236,7 +272,7 @@ try {
   await page.getByTestId("hub-delete-confirm").click();
   await pricingRow.waitFor({ state: "hidden" });
   assert.deepEqual(errors, [], "uncaught browser errors");
-  console.log("PASS: login recovery, ten views, official catalog/announcement/failure/approval/check contracts, CRUD, time pricing/current rates/cache/holiday/overlap validation, cost routing, key issuance/revocation, image, SSE, desktop/mobile layout; screenshots in test-results/llmhub");
+  console.log("PASS: login recovery, ten views, official catalog/announcement/failure/approval/check contracts, CRUD, time pricing/current rates/cache/holiday/overlap validation, cost routing, no-call cost prediction, request prediction/error snapshots, key issuance/revocation, image, SSE, desktop/mobile layout; screenshots in test-results/llmhub");
 } finally {
   clearTimeout(watchdog);
   await browser.close();

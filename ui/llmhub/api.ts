@@ -1,7 +1,7 @@
 import { createApi, fetchBaseQuery } from "@reduxjs/toolkit/query/react";
 import { configureStore, createSlice, PayloadAction } from "@reduxjs/toolkit";
 import { setupListeners } from "@reduxjs/toolkit/query";
-import type { ConfigResponse, Config, Key, Overview, PricingResponse, CatalogResponse } from "./types";
+import type { ConfigResponse, Config, Key, Overview, PricingResponse, CatalogResponse, EstimateResponse } from "./types";
 
 const session = createSlice({
 	name: "session",
@@ -26,6 +26,9 @@ export const api = createApi({
 	}),
 	tagTypes: ["Config", "Keys", "Usage", "Catalog"],
 	endpoints: (build) => ({
+		estimate: build.mutation<EstimateResponse, { project_id: string; scene_id: string; request: Record<string, unknown> }>({
+			query: (body) => ({ url: "estimate", method: "POST", body }),
+		}),
 		config: build.query<ConfigResponse, void>({ query: () => "config", providesTags: ["Config"] }),
 		pricing: build.query<PricingResponse, void>({ query: () => "pricing", providesTags: ["Config"] }),
 		catalog: build.query<CatalogResponse, void>({ query: () => "catalog", providesTags: ["Catalog", "Config"] }),
@@ -62,6 +65,7 @@ export const store = configureStore({
 });
 setupListeners(store.dispatch);
 export const {
+	useEstimateMutation,
 	useConfigQuery,
 	usePricingQuery,
 	useCatalogQuery,

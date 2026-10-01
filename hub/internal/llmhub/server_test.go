@@ -25,6 +25,99 @@ func testConfig() Config {
 	}
 }
 
+func TestPredictionEstimateLearningAndConservativeBudget(t *testing.T) {
+	var calls atomic.Int64
+	server, store, token := testServer(t, func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		io.WriteString(w, `{"usage":{"prompt_tokens":100,"completion_tokens":20,"prompt_tokens_details":{"cached_read_tokens":50}}}`)
+	})
+	server.now = func() time.Time { return time.Now().Add(10 * time.Second) }
+	c := server.snapshot()
+	rate := 0.2
+	c.Profiles[0].CachedInputUSDPerMillion = &rate
+	b, _ := json.Marshal(map[string]any{"config": c, "version": 2})
+	if w := call(server, "PUT", "/api/llmhub/config", testAdmin, string(b)); w.Code != 200 {
+		t.Fatal(w.Body.String())
+	}
+	request := `{"model":"copy","messages":[{"role":"user","content":"same exact prompt"}]}`
+	for i := 0; i < 4; i++ {
+		if w := call(server, "POST", "/v1/chat/completions", token, request); w.Code != 200 {
+			t.Fatal(w.Body.String())
+		}
+	}
+	rows, err := store.Recent("storepilot", 10)
+	if err != nil || len(rows) != 4 {
+		t.Fatal(err, rows)
+	}
+	last := rows[0]
+	if last.Prediction == nil || last.Prediction.Samples != 3 || last.Prediction.CacheHitProbability == nil || *last.Prediction.CacheHitProbability != 0.8 || last.Prediction.ErrorUSD == nil || last.CostUSD != 0.0001 || last.Estimated {
+		t.Fatalf("prediction/settlement missing: %+v", last)
+	}
+	var n int
+	if err := store.Settle(last.ID, "success", 200, 100, 20, 100, 1, false, last.PriceSnapshot); err != nil {
+		t.Fatal(err)
+	}
+	store.db.QueryRow("SELECT COUNT(*) FROM prediction_observations").Scan(&n)
+	if n != 4 {
+		t.Fatal("duplicate settlement learned twice", n)
+	}
+	estimate := `{"project_id":"storepilot","scene_id":"copy","request":` + request + `}`
+	if w := call(server, "POST", "/api/llmhub/estimate", token, estimate); w.Code != 401 {
+		t.Fatal("project key accessed admin predictor", w.Code)
+	}
+	w := call(server, "POST", "/api/llmhub/estimate", testAdmin, estimate)
+	if w.Code != 200 || !strings.Contains(w.Body.String(), `"samples":4`) || !strings.Contains(w.Body.String(), `"cache_hit_probability":`) || calls.Load() != 4 {
+		t.Fatal("estimate called model or lost samples", w.Code, w.Body.String(), calls.Load())
+	}
+	for _, invalid := range []string{
+		`{"project_id":"storepilot","scene_id":"absent","request":{}}`,
+		`{"project_id":"storepilot","scene_id":"copy","request":{"messages":[{"role":"user","content":"hello"}],"extra_headers":{"Authorization":"bypass"}}}`,
+	} {
+		if w := call(server, "POST", "/api/llmhub/estimate", testAdmin, invalid); w.Code != 400 {
+			t.Fatal(w.Code, w.Body.String())
+		}
+	}
+	before, _ := store.Usage("storepilot", time.Now().UTC().Format("2006-01"))
+	c = server.snapshot()
+	c.Projects[0].MonthlyBudgetUSD = before[0].CostUSD + last.Prediction.ReservationUSD - 0.000001
+	b, _ = json.Marshal(map[string]any{"config": c, "version": 3})
+	if w := call(server, "PUT", "/api/llmhub/config", testAdmin, string(b)); w.Code != 200 {
+		t.Fatal(w.Body.String())
+	}
+	if w := call(server, "POST", "/v1/chat/completions", token, request); w.Code != 402 || calls.Load() != 4 {
+		t.Fatal("discount prediction bypassed reservation", w.Code, w.Body.String())
+	}
+}
+
+func TestUnknownWritesAndIncompleteUsageKeepReservation(t *testing.T) {
+	for _, raw := range []string{
+		`{"usage":{"prompt_tokens":100}}`,
+		`{"usage":{"prompt_tokens":100,"completion_tokens":20,"prompt_tokens_details":{"cached_tokens":20,"cache_write_tokens":30}}}`,
+	} {
+		for _, stream := range []bool{false, true} {
+			server, store, token := testServer(t, func(w http.ResponseWriter, r *http.Request) {
+				if stream {
+					w.Header().Set("Content-Type", "text/event-stream")
+					io.WriteString(w, "data: "+raw+"\n\ndata: [DONE]\n\n")
+				} else {
+					io.WriteString(w, raw)
+				}
+			})
+			body := `{"model":"copy","messages":[{"role":"user","content":"hello"}],"stream":false}`
+			if stream {
+				body = strings.Replace(body, `"stream":false`, `"stream":true`, 1)
+			}
+			if w := call(server, "POST", "/v1/chat/completions", token, body); w.Code != 200 {
+				t.Fatal(w.Code, w.Body.String())
+			}
+			rows, err := store.Recent("storepilot", 1)
+			if err != nil || len(rows) != 1 || !rows[0].Estimated || rows[0].CostUSD != rows[0].Prediction.ReservationUSD || rows[0].Prediction.ErrorUSD != nil {
+				t.Fatal("unknown tariff/partial usage treated as exact", rows, err)
+			}
+		}
+	}
+}
+
 func TestDispatchPriceSnapshotSurvivesStreamBoundary(t *testing.T) {
 	var clock atomic.Int64
 	clock.Store(instant("2026-09-28T03:59:59Z").UnixNano())

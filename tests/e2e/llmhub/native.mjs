@@ -54,7 +54,7 @@ try {
   const hubURL = `http://127.0.0.1:${hubPort}`;
   await writeFile(path.join(directory, "config.json"), JSON.stringify({ client: { initial_pool_size: 5, enable_logging: false, drop_excess_requests: false }, config_store: { enabled: false }, logs_store: { enabled: false }, providers: {
     openai: { keys: [{ name: "primary", value: "mock-provider-key", models: ["*"], weight: 1 }], network_config: { base_url: `http://127.0.0.1:${port}/v1`, max_retries: 0 }, concurrency_and_buffer_size: { concurrency: 2, buffer_size: 10 } },
-    deepseek: { keys: [{ name: "primary", value: "mock-deepseek-key", models: ["*"], weight: 1 }], network_config: { base_url: `http://127.0.0.1:${port}/v1`, max_retries: 0 }, concurrency_and_buffer_size: { concurrency: 2, buffer_size: 10 } },
+    deepseek: { send_back_raw_response: true, send_back_raw_request: false, store_raw_request_response: false, keys: [{ name: "primary", value: "mock-deepseek-key", models: ["*"], weight: 1 }], network_config: { base_url: `http://127.0.0.1:${port}/v1`, max_retries: 0 }, concurrency_and_buffer_size: { concurrency: 2, buffer_size: 10 } },
   } }));
   await writeFile(path.join(directory, "seed.json"), JSON.stringify({ catalog: { enabled: false, interval_minutes: 360 }, projects: [{ id: "p", name: "Integration", enabled: true, monthly_budget_usd: 1 }], pools: [{ id: "shared", concurrency: 1, queue_size: 4, rpm: 50, tpm: 100000 }], profiles: [{ id: "text.fast", provider: "openai", model: "mock-text", key_name: "primary", pool_id: "shared", max_output_tokens: 32, input_usd_per_million: 1, output_usd_per_million: 2 }], scenes: [{ id: "copy", project_id: "p", name: "Copy", profiles: ["text.fast"], endpoint: "/v1/chat/completions", queue_timeout_seconds: 3, timeout_seconds: 5, retries: 0 }] }));
   const bifrost = spawn(process.env.BIFROST_BINARY, ["-host", "127.0.0.1", "-port", String(bifrostPort), "-app-dir", directory], { env: { ...process.env, BIFROST_SETUP_TOKEN: admin }, stdio: ["ignore", "pipe", "pipe"] });
@@ -80,6 +80,11 @@ try {
   assert.equal(overview.usage[0].output_tokens, 10);
   assert.equal(overview.usage[0].cost_usd, 0.00004);
   assert.equal(overview.recent[0].price_snapshot.input_usd_per_million, 1);
+  assert.equal(overview.recent[1].prediction.method, "conservative_no_history");
+  assert.equal(overview.recent[0].prediction.method, "exact_request_history");
+  assert.equal(overview.recent[0].prediction.samples, 1);
+  assert.ok(overview.recent[0].prediction.reservation_usd > overview.recent[0].cost_usd);
+  assert.equal(typeof overview.recent[0].prediction.error_usd, "number");
   const inferenceRequests = requests.filter((r) => r.path?.includes("chat/completions"));
   assert.equal(inferenceRequests.length, 2);
   assert.ok(inferenceRequests.every((r) => r.model === "mock-text" && r.authorization === "Bearer mock-provider-key"));
@@ -107,11 +112,14 @@ try {
   assert.equal(added.status, 200, await added.text());
   const deepseekResult = await client.text("deepseek", [{ role: "user", content: "native cache fields" }]);
   const nativeCached = deepseekResult.usage.prompt_cache_hit_tokens ?? deepseekResult.usage.prompt_tokens_details?.cached_tokens;
-  if (nativeCached !== undefined) assert.equal(nativeCached, 4);
+  assert.equal(nativeCached, 4);
+  assert.equal(deepseekResult.extra_fields, undefined, "private raw envelopes must not reach clients");
   const nativeStream = await client.stream("deepseek", [{ role: "user", content: "native cache stream" }]);
   assert.equal(nativeStream.headers.get("X-LLMHub-Price-Window"), "peak");
   const nativeStreamBody = await nativeStream.text();
   assert.match(nativeStreamBody, /\[DONE\]/);
+  assert.doesNotMatch(nativeStreamBody, /raw_response|raw_request|extra_fields/);
+  assert.match(nativeStreamBody, /"prompt_cache_hit_tokens":4/);
   const deepseekOverview = await (await fetch(`${hubURL}/api/llmhub/overview`, { headers: { Authorization: `Bearer ${admin}` } })).json();
   const nativeRows = deepseekOverview.recent.filter((a) => a.profile_id === "text.deepseek");
   assert.equal(nativeRows.length, 2);
