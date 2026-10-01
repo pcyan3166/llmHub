@@ -71,11 +71,13 @@ export type CatalogQuote = {
 	cached?: number;
 	peak?: CatalogQuote;
 	automatic: boolean;
+	display_only?: boolean;
 	conditions: string;
 	billing_details?: Record<string, string>;
 };
 export type CatalogSource = {
 	provider: string;
+	scope?: string;
 	url: string;
 	checked_at: string;
 	verified_at: string;

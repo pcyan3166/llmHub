@@ -855,3 +855,33 @@ pre {
 .catalog-view .warn {
 	color: #895416;
 }
+.catalog-sources {
+	table-layout: fixed;
+}
+.catalog-source-name {
+	width: 40%;
+}
+.catalog-source-status {
+	width: 18%;
+}
+.catalog-source-time {
+	width: 24%;
+}
+.catalog-source-next {
+	width: 18%;
+}
+@media (max-width: 700px) {
+	.catalog-sources {
+		width: 720px;
+	}
+	.catalog-source-name {
+		width: 175px;
+	}
+	.catalog-source-status {
+		width: 135px;
+	}
+	.catalog-source-time,
+	.catalog-source-next {
+		width: 205px;
+	}
+}

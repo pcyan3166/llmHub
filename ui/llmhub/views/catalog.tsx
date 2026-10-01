@@ -8,6 +8,22 @@ import { Modal } from "./editor";
 
 const date = (value: string) => (value && !value.startsWith("0001-") ? new Date(value).toLocaleString() : "尚未检查");
 const rate = (value?: number) => (value === undefined ? "未列出" : `$${value}`);
+const providerNames: Record<string, string> = { glm: "GLM", minimax: "MiniMax", kimi: "Kimi", gemini: "Gemini", qwen: "Qwen" };
+
+function BillingDetails({ provider, name, values }: { provider: string; name: string; values: Record<string, string> }) {
+	const [open, setOpen] = useState(false);
+	return (
+		<details data-testid={`hub-catalog-details-${provider}-${name}`} onToggle={(e) => setOpen(e.currentTarget.open)}>
+			<summary>完整计费维度</summary>
+			{open &&
+				Object.entries(values).map(([dimension, price]) => (
+					<small key={dimension}>
+						{dimension}: {price}
+					</small>
+				))}
+		</details>
+	);
+}
 const events: Record<string, string> = {
 	new_model: "首次发现",
 	price_changed: "报价变化",
@@ -129,7 +145,13 @@ export function CatalogView({
 				</p>
 			)}
 			<div className="table-wrap">
-				<table>
+				<table className="catalog-sources">
+					<colgroup>
+						<col className="catalog-source-name" />
+						<col className="catalog-source-status" />
+						<col className="catalog-source-time" />
+						<col className="catalog-source-next" />
+					</colgroup>
 					<thead>
 						<tr>
 							<th>官方来源</th>
@@ -147,11 +169,12 @@ export function CatalogView({
 							return (
 								<tr key={source.provider} data-testid={`hub-catalog-source-${source.provider}`}>
 									<td>
-										<a href={source.url} target="_blank" rel="noreferrer">
-											{source.provider}
+										<a href={source.url.replace(/\.md$/, "")} target="_blank" rel="noreferrer">
+											{providerNames[source.provider] ?? source.provider}
 											<ExternalLink size={13} />
 										</a>
 										<small>{source.quotes?.length ?? 0} 个报价模型</small>
+										{source.scope && <small>{source.scope}</small>}
 										<small>
 											<a href={source.news_url?.replace(/\.md$/, "")} target="_blank" rel="noreferrer">
 												模型公告 <ExternalLink size={12} />
@@ -196,7 +219,9 @@ export function CatalogView({
 								<td>
 									{p.quote ? (
 										<>
-											{rate(p.quote.input)} / {rate(p.quote.output)} / {rate(p.quote.cached)}
+											{p.quote.display_only
+												? "多维报价，见官网计费明细"
+												: `${rate(p.quote.input)} / ${rate(p.quote.output)} / ${rate(p.quote.cached)}`}
 											{p.quote.peak && (
 												<small>
 													峰时 {rate(p.quote.peak.input)} / {rate(p.quote.peak.output)} / {rate(p.quote.peak.cached)}
@@ -248,11 +273,11 @@ export function CatalogView({
 							(source.quotes ?? []).map((q) => (
 								<tr key={`${source.provider}/${q.name}`}>
 									<td>
-										{source.provider}
+										{providerNames[source.provider] ?? source.provider}
 										<small className="mono">{q.name}</small>
 									</td>
 									<td>
-										{rate(q.input)} / {rate(q.output)} / {rate(q.cached)}
+										{q.display_only ? "多维报价，见计费明细" : `${rate(q.input)} / ${rate(q.output)} / ${rate(q.cached)}`}
 										{q.peak && (
 											<small>
 												峰时 {rate(q.peak.input)} / {rate(q.peak.output)} / {rate(q.peak.cached)}
@@ -261,16 +286,7 @@ export function CatalogView({
 									</td>
 									<td>
 										{q.conditions}
-										{q.billing_details && (
-											<details data-testid={`hub-catalog-details-${source.provider}-${q.name}`}>
-												<summary>完整计费维度</summary>
-												{Object.entries(q.billing_details).map(([dimension, price]) => (
-													<small key={dimension}>
-														{dimension}: {price}
-													</small>
-												))}
-											</details>
-										)}
+										{q.billing_details && <BillingDetails provider={source.provider} name={q.name} values={q.billing_details} />}
 									</td>
 								</tr>
 							)),
@@ -305,15 +321,9 @@ export function CatalogView({
 									<td>{events[e.kind] ?? e.kind}</td>
 									<td>
 										{e.before && (
-											<small>
-												原 {rate(e.before.input)} / {rate(e.before.output)}
-											</small>
+											<small>原 {e.before.display_only ? "多维报价" : `${rate(e.before.input)} / ${rate(e.before.output)}`}</small>
 										)}
-										{e.after && (
-											<>
-												新 {rate(e.after.input)} / {rate(e.after.output)}
-											</>
-										)}
+										{e.after && <>新 {e.after.display_only ? "多维报价" : `${rate(e.after.input)} / ${rate(e.after.output)}`}</>}
 									</td>
 								</tr>
 							))}

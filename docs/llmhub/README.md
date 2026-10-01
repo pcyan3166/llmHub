@@ -161,6 +161,18 @@ Python 客户端位于 `hub/sdk/python/llmhub.py`，使用标准库，无额外�
 
 当前支持 [DeepSeek 报价](https://api-docs.deepseek.com/quick_start/pricing/)及[更新日志](https://api-docs.deepseek.com/updates)、[OpenAI 标准报价](https://developers.openai.com/api/docs/pricing)及[更新日志](https://developers.openai.com/api/docs/changelog)、[Anthropic 报价](https://platform.claude.com/docs/en/about-claude/pricing)及[模型目录](https://platform.claude.com/docs/en/models/overview)。不是全供应商爬虫；未支持的供应商仍须手动维护。公告提及的模型可能是别名、预览或下线通知，不代表账户可用性；新模型只进入目录和变更记录，绝不自动加入业务路由。
 
+新增五家公开官网来源：
+
+| 目录供应商 | 官方报价 | 模型发布 / 目录 | 适用范围 |
+|---|---|---|---|
+| `glm`（也识别 `zai`） | [Z.ai](https://docs.z.ai/guides/overview/pricing) | [发布记录](https://docs.z.ai/release-notes/new-released) | 国际站 USD，不适用于智谱国内站 / Coding Plan |
+| `minimax` | [MiniMax Pay as You Go](https://platform.minimax.io/docs/guides/pricing-paygo) | [模型发布](https://platform.minimax.io/docs/release-notes/models) | 国际站按量 API，不适用于订阅套餐 |
+| `kimi`（也识别 `moonshot`） | [Kimi](https://platform.kimi.ai/docs/pricing/chat) | [模型目录](https://platform.kimi.ai/docs/models) | 国际站 USD，不适用于国内站 / Kimi Code |
+| `gemini` | [Gemini Developer API](https://ai.google.dev/gemini-api/docs/pricing) | [发布记录](https://ai.google.dev/gemini-api/docs/changelog) | Developer API，不适用于 Vertex AI |
+| `qwen`（也识别 `dashscope`） | [阿里云国际站](https://www.alibabacloud.com/help/en/model-studio/model-pricing) | [模型目录](https://www.alibabacloud.com/help/en/model-studio/models) | 各地区 / 部署模式的 USD 明细，不适用于国内人民币报价 |
+
+这五家接入定时抓取、模型发现、价格 / 条件变化审计及失败退避；已有数据库自动补齐新增来源，保留原报价、批准记录和历史事件。新来源的缓存写入 / 存储、上下文阶梯、优先档位、促销截止日期、账户地区等尚未完整覆盖网关计费，因此均不提供自动采纳，也不自动修改已有业务单价。GLM / MiniMax / Kimi 展示官网明确列出的 USD / 1M 基础单价并保留额外维度；Gemini / Qwen 仅展示多维明细，`display_only:true` 的目录条目不能把 `input` / `output` 占位值当作可用报价。明细按需展开，避免一次渲染整站表格。不会把人民币猜算为美元，也不会拿国际站价格套用国内 API。目录别名识别不等于新增 Bifrost 原生供应商；推理仍需正确配置其自定义供应商 / API 地址。
+
 已有手动报价和协议价不会被覆盖。在目录页核对账户、地区、处理档位和适用计费条件，然后对精确匹配的 Profile 执行“采纳并跟随”。这会设置 `follow_official:true` 并记录已批准的条件指纹。只在计费条件不变、来源验证有效时自动更新单价；报价与配置历史、审计在一个 SQLite 事务中提交，不覆盖抓取期间的管理员修改。关闭 Profile 的“跟随已确认的官方报价”可恢复手动管理。`official_terms`、`official_calendar_year`、`official_calendar_hash` 是批准凭据，不应手工伪造。
 
 DeepSeek 会严格解析峰 / 谷与缓存命中 / 未命中的完整报价矩阵。自动更新只适用于与官方 UTC 周一至周五 01–04 / 06–10 时段一致的档案，保留已确认的 Asia/Shanghai 节假日日历。新年度或日历修改后必须再次确认完整日历，不会凭单个日期推断整年假期。OpenAI 仅自动套用无额外上下文 / 缓存写入维度的标准文本报价，派发时固定 `service_tier:"default"`，避免账户默认 Fast 档位改变单价。长上下文、缓存写入、图片等多维报价以及 Anthropic 的非精确 API 名称 / 额外收费均标记“待人工核对”，不猜测转换或覆盖价格。

@@ -108,7 +108,8 @@ func TestOfficialParsersRejectAmbiguityAndBindConditions(t *testing.T) {
 
 // Opt-in smoke against previously downloaded public pages; no network or paid inference in tests.
 func TestOfficialDownloadedPages(t *testing.T) {
-	for _, provider := range []string{"openai", "deepseek", "anthropic"} {
+	for _, source := range officialSources {
+		provider := source.Provider
 		path := os.Getenv("LLMHUB_OFFICIAL_" + strings.ToUpper(provider) + "_PAGE")
 		if path == "" {
 			continue
@@ -150,5 +151,125 @@ func TestOfficialAnnouncementsDoNotCreatePriceQuotes(t *testing.T) {
 		if _, _, err := parseCatalogNews(source.Provider, []byte("login required")); err == nil {
 			t.Fatal("unrecognized official news accepted")
 		}
+	}
+}
+
+func providerPage(provider string) string {
+	switch provider {
+	case "glm":
+		return "# Pricing\nAll prices are in USD.\n### Text Models\nPrices per 1M tokens.\n| Model | Input | Cached Input | Cached Input Storage | Output |\n| :- | :- | :- | :- | :- |\n| GLM-test | \\$2 | \\$0.2 | Limited-time Free | \\$4 |\n"
+	case "minimax":
+		return "# Pay as You Go\n## LLM\n| Model | Input | Output | Prompt caching Read | Prompt caching Write |\n| :- | :- | :- | :- | :- |\n| **MiniMax-test** | \\$2 / M tokens | \\$4 / M tokens | \\$0.2 / M tokens | \\$2.5 / M tokens |\n"
+	case "kimi":
+		return "# Model Inference Pricing Explanation\n1M = 1,000,000\n" + `<DocTable columns={[{ title: "Model", width: "20%" },{ title: "Unit", width: "20%" },{ title: "Input Price (Cache Hit)", width: "20%" },{ title: "Input Price (Cache Miss)", width: "20%" },{ title: "Output Price", width: "10%" },{ title: "Context Window", width: "10%" },]} rows={[["kimi-test", "1M tokens", <>{"$"}0.2</>, <>{"$"}2</>, <>{"$"}4</>, "128K"],]} />`
+	case "gemini":
+		return `<div class="devsite-article-body"><h1>Gemini Developer API pricing</h1><h2 id="gemini-test">Gemini Test</h2><section><h3>Standard</h3><table class="pricing-table"><tr><th></th><th>Free Tier</th><th>Paid Tier, per 1M tokens in USD</th></tr><tr><td>Input price</td><td>Free of charge</td><td>$2 through December 31; $4 next year</td></tr><tr><td>Output price</td><td>Free of charge</td><td>$6</td></tr></table></section></div>`
+	case "qwen":
+		return `<article class="markdown-body"><h1>Model pricing</h1><h2>Tiered pricing rules</h2><h3>Qwen-Max</h3><section id="singapore"><table><tr><th>Model ID</th><th>Deployment scope</th><th>Mode</th><th>Input tokens per request</th><th>Input price (per 1 million tokens)</th><th>Output price (per 1 million tokens)</th></tr><tr><td rowspan="2">qwen-test</td><td rowspan="2">International</td><td rowspan="2">Thinking</td><td>0–32K</td><td>$2</td><td>$4</td></tr><tr><td>32K–128K</td><td>$4</td><td>$8</td></tr></table></section></article>`
+	}
+	return ""
+}
+
+func TestAdditionalProviderPricingSnapshots(t *testing.T) {
+	for _, provider := range []string{"glm", "minimax", "kimi", "gemini", "qwen"} {
+		t.Run(provider, func(t *testing.T) {
+			page := providerPage(provider)
+			quotes, terms, err := parseCatalog(provider, []byte(page))
+			if err != nil || len(quotes) != 1 || len(terms) != 64 {
+				t.Fatalf("%+v %v", quotes, err)
+			}
+			q := quotes[0]
+			if q.Automatic || len(q.BillingDetails) == 0 {
+				t.Fatal("lost billing dimensions or enabled unsafe automatic tariff")
+			}
+			if _, err := officialTariff(Profile{}, q, instant("2026-10-01T00:00:00Z"), true); err == nil {
+				t.Fatal("complex tariff applied as a scalar")
+			}
+			if provider == "qwen" || provider == "gemini" {
+				if !q.DisplayOnly {
+					t.Fatal("complex quote presented as zero-priced model")
+				}
+			} else if q.DisplayOnly || q.Input != 2 || q.Output != 4 || *q.Cached != 0.2 {
+				t.Fatal("incorrect USD / 1M quote", q)
+			}
+			changedPage := strings.ReplaceAll(page, "$2", "$3")
+			if provider == "kimi" {
+				changedPage = strings.ReplaceAll(page, `"}2</>`, `"}3</>`)
+			}
+			changed, changedTerms, err := parseCatalog(provider, []byte(changedPage))
+			if err != nil || len(catalogChanges(CatalogSource{Quotes: quotes, TermsHash: terms}, CatalogSource{Provider: provider, Quotes: changed, TermsHash: changedTerms}, instant("2026-10-01T00:00:00Z"))) == 0 {
+				t.Fatal("price update not detected", err)
+			}
+			if _, _, err := parseCatalog(provider, []byte("login required")); err == nil {
+				t.Fatal("accepted login instead of official document")
+			}
+		})
+	}
+	page := strings.ReplaceAll(providerPage("glm"), "\\$2", "Free")
+	q, _, err := parseCatalog("glm", []byte(page))
+	if err == nil || q != nil {
+		t.Fatal("accepted cached input greater than free input")
+	}
+	for _, provider := range []string{"glm", "minimax", "kimi", "gemini", "qwen"} {
+		page := strings.ReplaceAll(providerPage(provider), "$", "¥")
+		page = strings.ReplaceAll(page, "USD", "CNY")
+		if _, _, err := parseCatalog(provider, []byte(page)); err == nil {
+			t.Fatal("accepted wrong currency", provider)
+		}
+	}
+}
+
+func TestProviderBillingDimensionsAndLiteralSafety(t *testing.T) {
+	page := providerPage("minimax")
+	row := "| **MiniMax-test** | \\$2 / M tokens | \\$4 / M tokens | \\$0.2 / M tokens | \\$2.5 / M tokens |"
+	page = strings.Replace(page, row, "<Tabs>\n<Tab title=\"Standard\">\n"+row+"\n</Tab>\n<Tab title=\"Priority*\">\n"+strings.ReplaceAll(row, "\\$2 /", "~~\\$4~~ \\$3 /")+"\n</Tab>\n</Tabs>", 1)
+	quotes, _, err := parseCatalog("minimax", []byte(page))
+	if err != nil || len(quotes) != 2 || quotes[0].Input != 2 || quotes[1].Input != 3 || !strings.Contains(quotes[1].Name, "Priority*") || quotes[1].BillingDetails["Prompt caching Write"] != "$2.5 / M tokens" {
+		t.Fatal("priority, discount or write price lost", quotes, err)
+	}
+	for _, page := range []string{strings.ReplaceAll(providerPage("minimax"), "**MiniMax-test**", ""), strings.ReplaceAll(providerPage("glm"), "Cached Input Storage", "Hourly storage bytes")} {
+		provider := "minimax"
+		if strings.Contains(page, "# Pricing") {
+			provider = "glm"
+		}
+		if _, _, err := parseCatalog(provider, []byte(page)); err == nil {
+			t.Fatal("accepted empty model or unknown dimensions")
+		}
+	}
+	free := strings.ReplaceAll(providerPage("glm"), `\$2`, "Free")
+	free = strings.ReplaceAll(free, `\$0.2`, "Free")
+	free = strings.ReplaceAll(free, `\$4`, "Free")
+	quotes, _, err = parseCatalog("glm", []byte(free))
+	if err != nil || quotes[0].Input != 0 || quotes[0].Output != 0 || *quotes[0].Cached != 0 || quotes[0].DisplayOnly {
+		t.Fatal("legitimate free tariff lost", err)
+	}
+	for _, value := range []string{`fetch("https://example.invalid")`, `undefined`, `<>{"CNY"}2</>`} {
+		page := strings.Replace(providerPage("kimi"), `<>{"$"}2</>`, value, 1)
+		if _, _, err := parseCatalog("kimi", []byte(page)); err == nil {
+			t.Fatal("accepted executable MDX or wrong currency", value)
+		}
+	}
+	qwen := strings.Replace(providerPage("qwen"), `<tr><th>Model ID</th>`, `<thead><tr><th rowspan="2">Model ID</th>`, 1)
+	qwen = strings.Replace(qwen, `<th>Deployment scope</th><th>Mode</th><th>Input tokens per request</th><th>Input price (per 1 million tokens)</th><th>Output price (per 1 million tokens)</th></tr>`, `<th rowspan="2">Deployment scope</th><th rowspan="2">Mode</th><th rowspan="2">Input tokens per request</th><th rowspan="2">Input price (per 1 million tokens)</th><th>Output price (per 1 million tokens)</th></tr><tr><th>Thinking mode</th></tr></thead>`, 1)
+	quotes, _, err = parseCatalog("qwen", []byte(qwen))
+	if err != nil || len(quotes) != 1 {
+		t.Fatal(err, quotes)
+	}
+	outputModes := 0
+	for dimension, price := range quotes[0].BillingDetails {
+		if strings.Contains(dimension, "Output price (per 1 million tokens) / Thinking mode") {
+			outputModes++
+			if price != "$4" && price != "$8" {
+				t.Fatal("tiered output price lost", price)
+			}
+		}
+	}
+	if outputModes != 2 {
+		t.Fatal("multi-row headers or tiered rows lost", quotes[0])
+	}
+	gemini := strings.Replace(providerPage("gemini"), `<td>Free of charge</td>`, `<td></td>`, 1)
+	quotes, _, err = parseCatalog("gemini", []byte(gemini))
+	if err != nil || !quotes[0].DisplayOnly {
+		t.Fatal("blank free tier incorrectly treated as paid zero", err)
 	}
 }

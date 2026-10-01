@@ -24,6 +24,11 @@ func fixtureCatalog(server *Server, input *string) {
 		if strings.Contains(url, "claude.com") {
 			return []byte(anthropicPage()), nil
 		}
+		for _, source := range officialSources[3:] {
+			if url == source.URL {
+				return []byte(providerPage(source.Provider)), nil
+			}
+		}
 		return []byte(openAIPage(*input)), nil
 	}
 }
@@ -39,7 +44,7 @@ func TestCatalogApprovalAutomaticUpdateAndFrozenBilling(t *testing.T) {
 		t.Fatal(err)
 	}
 	state, _ := store.catalogState()
-	if len(state.Sources) != 3 || len(state.Events) != 7 {
+	if len(state.Sources) != len(officialSources) || len(state.Events) != 7+2*(len(officialSources)-3) {
 		t.Fatalf("initial discovery: %+v", state)
 	}
 	if err := s.catalog.check(true); err != nil {
@@ -183,7 +188,7 @@ func TestCatalogSettingsLifecycleBackoffAndConcurrentEdits(t *testing.T) {
 	if sourceDue(source, *config.Catalog).Sub(source.CheckedAt) != 5*time.Minute {
 		t.Fatal("no failure backoff")
 	}
-	if err := s.catalog.check(false); err != nil || calls.Load() != 6 {
+	if err := s.catalog.check(false); err != nil || calls.Load() != int64(2*len(officialSources)) {
 		t.Fatal("tight retry loop")
 	}
 	s.catalog.fetch = func(ctx context.Context, url string) ([]byte, error) {
@@ -246,6 +251,22 @@ func TestOfficialPeakTariffPreservesCalendarAndNeedsAnnualApproval(t *testing.T)
 }
 
 func fixtureNews(url string) []byte {
+	for _, source := range officialSources[3:] {
+		if url == source.NewsURL {
+			switch source.Provider {
+			case "glm":
+				return []byte("# New Released\nGLM-test-news")
+			case "minimax":
+				return []byte("# Models\nMiniMax-test-news")
+			case "kimi":
+				return []byte("# Model List\nkimi-test-news")
+			case "gemini":
+				return []byte(`<div class="devsite-article-body"><h1>Release notes</h1><p>gemini-test-news</p></div>`)
+			case "qwen":
+				return []byte(`<article class="markdown-body"><h1>Recommended models</h1><p>qwen-test-news</p></article>`)
+			}
+		}
+	}
 	if strings.Contains(url, "changelog") {
 		return []byte("# Changelog\nReleased `gpt-test-news`.")
 	}
@@ -256,6 +277,51 @@ func fixtureNews(url string) []byte {
 		return []byte("<article><h1>Change Log</h1><p>Released deepseek-test-news.</p></article>")
 	}
 	return nil
+}
+
+func TestCatalogRegistryUpgradePreservesHistoryAndPrices(t *testing.T) {
+	s, store, _ := testServer(t, func(http.ResponseWriter, *http.Request) {})
+	old := CatalogState{Sources: append([]CatalogSource(nil), officialSources[:3]...), Events: []CatalogEvent{{Provider: "openai", Kind: "approved", Hash: strings.Repeat("a", 64)}}}
+	old.Sources[0].URL = "https://old.invalid"
+	old.Sources[0].VerifiedAt = instant("2026-10-01T00:00:00Z")
+	old.Sources[0].Hash = strings.Repeat("b", 64)
+	old.Sources[0].Quotes = []CatalogQuote{{Name: "preserved", Input: 7, Output: 9}}
+	if err := writeCatalog(store.db, old); err != nil {
+		t.Fatal(err)
+	}
+	state, err := store.catalogState()
+	if err != nil || len(state.Sources) != len(officialSources) || len(state.Events) != 1 || state.Sources[0].Hash != old.Sources[0].Hash || state.Sources[0].Quotes[0].Input != 7 || state.Sources[0].URL != officialSources[0].URL {
+		t.Fatal("catalog upgrade erased state", err, state)
+	}
+	if !state.Sources[0].VerifiedAt.IsZero() {
+		t.Fatal("old URL verification reused for a different official source")
+	}
+	for _, source := range state.Sources[3:] {
+		if !source.CheckedAt.IsZero() || len(source.Quotes) != 0 {
+			t.Fatal("new source incorrectly trusted")
+		}
+	}
+	input := "1"
+	fixtureCatalog(s, &input)
+	if err := s.catalog.check(false); err != nil {
+		t.Fatal(err)
+	}
+	state, _ = store.catalogState()
+	for _, source := range state.Sources {
+		if source.Error != "" || source.NewsError != "" || source.VerifiedAt.IsZero() {
+			t.Fatal("new source not checked", source.Provider, source.Error, source.NewsError)
+		}
+	}
+	for alias, provider := range map[string]string{"zai": "glm", "moonshot": "kimi", "dashscope": "qwen"} {
+		source, _ := catalogQuote(state, Profile{Provider: alias})
+		if source == nil || source.Provider != provider || !supportedCatalogProvider(alias) {
+			t.Fatal("provider alias missing", alias)
+		}
+	}
+	config, version, _ := store.Config()
+	if config.Profiles[0].FollowOfficial || config.Profiles[0].InputUSDPerMillion != 1 || version != 2 {
+		t.Fatal("registry upgrade modified manual pricing")
+	}
 }
 
 func TestCatalogHTTPBoundsAndURLAllowlist(t *testing.T) {

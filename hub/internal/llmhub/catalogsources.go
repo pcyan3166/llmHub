@@ -12,7 +12,7 @@ import (
 
 var catalogModelPattern = regexp.MustCompile(`^[a-z][a-z0-9.-]{0,255}$`)
 var dollarPattern = regexp.MustCompile(`^\$([0-9]+(?:\.[0-9]+)?)(?: / MTok)?(?:<sup>[0-9]+</sup>)?$`)
-var newsModelPattern = regexp.MustCompile(`\b(?:gpt-[a-z0-9.-]+|o[1-9](?:-[a-z0-9.-]+)?|claude-[a-z0-9.-]+|deepseek-[a-z0-9.-]+)\b`)
+var newsModelPattern = regexp.MustCompile(`(?i)\b(?:gpt-[a-z0-9.-]+|o[1-9](?:-[a-z0-9.-]+)?|claude-[a-z0-9.-]+|deepseek-[a-z0-9.-]+|glm-[a-z0-9.-]+|MiniMax-[a-z0-9.-]+|kimi-[a-z0-9.-]+|moonshot-[a-z0-9.-]+|gemini-[a-z0-9.-]+|qwen[a-z0-9.-]*)\b`)
 
 func parseCatalogNews(provider string, raw []byte) ([]string, string, error) {
 	if len(raw) == 0 || len(raw) > 2<<20 {
@@ -41,6 +41,21 @@ func parseCatalogNews(provider string, raw []byte) ([]string, string, error) {
 		if !strings.Contains(text, "# Models overview\n") {
 			return nil, "", fmt.Errorf("official model overview heading changed")
 		}
+	case "glm", "minimax", "kimi":
+		heading := map[string]string{"glm": "# New Released\n", "minimax": "# Models\n", "kimi": "# Model List\n"}[provider]
+		if !strings.Contains(text, heading) {
+			return nil, "", fmt.Errorf("official model announcements heading changed")
+		}
+	case "gemini", "qwen":
+		body, err := officialHTMLBody(provider, raw)
+		if err != nil {
+			return nil, "", err
+		}
+		text = documentText(body)
+		heading := map[string]string{"gemini": "Release notes", "qwen": "Recommended models"}[provider]
+		if !strings.Contains(text, heading) && !hasOfficialHeading(raw, heading) {
+			return nil, "", fmt.Errorf("official model announcements heading changed")
+		}
 	default:
 		return nil, "", fmt.Errorf("unsupported official announcements")
 	}
@@ -48,12 +63,19 @@ func parseCatalogNews(provider string, raw []byte) ([]string, string, error) {
 	models := []string{}
 	for _, model := range newsModelPattern.FindAllString(text, -1) {
 		model = strings.TrimRight(model, ".")
-		valid := strings.HasPrefix(model, provider+"-")
+		lower := strings.ToLower(model)
+		valid := strings.HasPrefix(lower, provider+"-")
 		if provider == "openai" {
 			valid = strings.HasPrefix(model, "gpt-") || strings.HasPrefix(model, "o")
 		}
 		if provider == "anthropic" {
 			valid = strings.HasPrefix(model, "claude-")
+		}
+		if provider == "kimi" {
+			valid = strings.HasPrefix(lower, "kimi-") || strings.HasPrefix(lower, "moonshot-")
+		}
+		if provider == "qwen" {
+			valid = strings.HasPrefix(lower, "qwen")
 		}
 		if valid && !seen[model] {
 			seen[model] = true
@@ -92,6 +114,12 @@ func parseCatalog(provider string, raw []byte) ([]CatalogQuote, string, error) {
 		quotes, terms, err = parseMarkdownCatalog(string(raw), "### Standard pricing data", []string{"Model", "Short context input", "Short context cached input", "Short context cache writes", "Short context output", "Long context input", "Long context cached input", "Long context cache writes", "Long context output"}, false)
 	case "anthropic":
 		quotes, terms, err = parseMarkdownCatalog(string(raw), "## Model pricing", []string{"Model", "Base input tokens", "5m cache writes", "1h cache writes", "Cache hits and refreshes", "Output tokens"}, true)
+	case "glm", "minimax":
+		quotes, terms, err = parseProviderMarkdown(provider, string(raw))
+	case "kimi":
+		quotes, terms, err = parseKimiMarkdown(string(raw))
+	case "gemini", "qwen":
+		quotes, terms, err = parseProviderHTML(provider, raw)
 	default:
 		err = fmt.Errorf("unsupported official provider")
 	}
@@ -231,6 +259,10 @@ func findElements(n *html.Node, name string) []*html.Node {
 }
 
 func htmlTable(table *html.Node) ([][]string, error) {
+	return readHTMLTable(table, false)
+}
+
+func readHTMLTable(table *html.Node, reviewOnly bool) ([][]string, error) {
 	rows := findElements(table, "tr")
 	if len(rows) > 512 {
 		return nil, fmt.Errorf("official table exceeds limits")
@@ -252,7 +284,11 @@ func htmlTable(table *html.Node) ([][]string, error) {
 			for _, a := range cell.Attr {
 				if a.Key == "rowspan" || a.Key == "colspan" {
 					v, err := strconv.Atoi(a.Val)
-					if err != nil || v < 1 || v > 24 {
+					maxSpan := 24
+					if reviewOnly && a.Key == "rowspan" {
+						maxSpan = 512
+					}
+					if err != nil || v < 1 || v > maxSpan {
 						return nil, fmt.Errorf("invalid official table span")
 					}
 					if a.Key == "rowspan" {
@@ -266,6 +302,12 @@ func htmlTable(table *html.Node) ([][]string, error) {
 				return nil, fmt.Errorf("invalid official table dimensions")
 			}
 			value := strings.Join(strings.Fields(htmlText(cell)), " ")
+			if reviewOnly {
+				value = normalizedText(cell)
+				if value == "" {
+					value = "未列出"
+				}
+			}
 			if value == "" {
 				return nil, fmt.Errorf("empty official table cell")
 			}

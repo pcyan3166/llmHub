@@ -86,7 +86,7 @@ func (c Config) Validate() error {
 		pools[p.ID] = true
 	}
 	for _, p := range c.Profiles {
-		if p.FollowOfficial && (p.Provider != "openai" && p.Provider != "deepseek" && p.Provider != "anthropic" || p.ImageUSDPerImage > 0) || p.OfficialTerms != "" && !catalogHashPattern.MatchString(p.OfficialTerms) || p.OfficialCalendarHash != "" && !catalogHashPattern.MatchString(p.OfficialCalendarHash) || p.OfficialCalendarYear != 0 && (p.OfficialCalendarYear < 2000 || p.OfficialCalendarYear > 2200) {
+		if p.FollowOfficial && (!supportedCatalogProvider(p.Provider) || p.ImageUSDPerImage > 0) || p.OfficialTerms != "" && !catalogHashPattern.MatchString(p.OfficialTerms) || p.OfficialCalendarHash != "" && !catalogHashPattern.MatchString(p.OfficialCalendarHash) || p.OfficialCalendarYear != 0 && (p.OfficialCalendarYear < 2000 || p.OfficialCalendarYear > 2200) {
 			return fmt.Errorf("invalid official price tracking for profile %q", p.ID)
 		}
 		_, duplicate := profiles[p.ID]

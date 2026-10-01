@@ -40,18 +40,27 @@ try {
   // UI contract fixtures are isolated from real official-page polling; backend sync is covered by Go tests.
   const catalogConfig = await (await page.request.get(`${url}/api/llmhub/config`, { headers })).json();
   const liveCatalog = await (await page.request.get(`${url}/api/llmhub/catalog`, { headers })).json();
-  assert.deepEqual(liveCatalog.sources.map((s) => s.provider), ["deepseek", "openai", "anthropic"]);
+  assert.deepEqual(liveCatalog.sources.map((s) => s.provider), ["deepseek", "openai", "anthropic", "glm", "minimax", "kimi", "gemini", "qwen"]);
+  await page.getByTestId("hub-nav-catalog").click();
+  for (const provider of ["glm", "minimax", "kimi", "gemini", "qwen"]) await page.getByTestId(`hub-catalog-source-${provider}`).waitFor();
+  await page.screenshot({ path: path.join(output, "desktop-catalog-live.png") });
+  await page.setViewportSize({ width: 390, height: 844 });
+  const statusBounds = await page.getByTestId("hub-catalog-source-deepseek").locator(".badge").boundingBox();
+  assert.ok(statusBounds && statusBounds.x + statusBounds.width <= 390, "mobile source status clipped by source descriptions");
+  await page.screenshot({ path: path.join(output, "mobile-catalog-live.png") });
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth + 1), false, "live mobile catalog overflow");
+  await page.setViewportSize({ width: 1440, height: 1000 });
   const catalogProfile = catalogConfig.config.profiles[0];
   const catalogAt = new Date().toISOString();
   const catalogHash = "a".repeat(64);
   const quote = { name: catalogProfile.model, model: catalogProfile.model, input: 0.25, output: 1, cached: 0.05, automatic: true, conditions: "QA standard text tariff" };
   const catalogFixture = {
     settings: catalogConfig.config.catalog ?? { enabled: true, interval_minutes: 360 },
-    sources: liveCatalog.sources.map((s) => ({ ...s, checked_at: catalogAt, verified_at: catalogAt, hash: catalogHash, terms_hash: catalogHash, news_url: s.news_url, news_checked_at: catalogAt, news_hash: catalogHash, news_error: "", news_models: ["qa-new-model"], quotes: s.provider === "openai" ? [quote] : [], error: s.provider === "deepseek" ? "QA official layout changed" : "" })),
+    sources: liveCatalog.sources.map((s) => ({ ...s, checked_at: catalogAt, verified_at: catalogAt, hash: catalogHash, terms_hash: catalogHash, news_url: s.news_url, news_checked_at: catalogAt, news_hash: catalogHash, news_error: "", news_models: ["qa-new-model"], quotes: s.provider === "openai" ? [quote] : s.provider === "qwen" ? [{ ...quote, name: "qwen-qa", model: "qwen-qa", automatic: false, display_only: true, input: 0, output: 0, cached: undefined, billing_details: { "Singapore / 0–32K / Input": "$0.5", "Singapore / 32K–128K / Input": "$1.5" } }] : [], error: s.provider === "deepseek" ? "QA official layout changed" : "" })),
     profiles: [{ id: catalogProfile.id, status: "review", reason: "待管理员采纳并确认计费条件", verified_at: catalogAt, can_apply: true, quote, hash: catalogHash }],
     events: [{ at: catalogAt, provider: "openai", model: "qa-new-model", kind: "new_model", hash: catalogHash, after: quote }],
     running: false,
-    next_checks: { deepseek: catalogAt, openai: catalogAt, anthropic: catalogAt },
+    next_checks: Object.fromEntries(liveCatalog.sources.map((s) => [s.provider, catalogAt])),
     at: catalogAt,
   };
   let approved = false;
@@ -68,6 +77,11 @@ try {
   });
   await page.getByTestId("hub-nav-catalog").click();
   await page.getByText("QA official layout changed").waitFor();
+  for (const provider of ["glm", "minimax", "kimi", "gemini", "qwen"]) await page.getByTestId(`hub-catalog-source-${provider}`).waitFor();
+  assert.equal(await page.getByTestId("hub-catalog-details-qwen-qwen-qa").locator("small").count(), 0, "collapsed billing details rendered eagerly");
+  await page.getByTestId("hub-catalog-details-qwen-qwen-qa").locator("summary").click();
+  await page.getByText("Singapore / 32K–128K / Input: $1.5", { exact: true }).waitFor();
+  assert.equal(await page.getByTestId("hub-catalog-details-qwen-qwen-qa").locator("..").locator("..").getByText("$0 / $0", { exact: true }).count(), 0);
   await page.getByTestId("hub-catalog-check").click();
   await page.getByText("官网检查已开始").waitFor();
   assert.equal(checked, true);

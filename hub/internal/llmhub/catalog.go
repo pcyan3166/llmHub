@@ -30,12 +30,14 @@ type CatalogQuote struct {
 	Cached         *float64          `json:"cached,omitempty"`
 	Peak           *CatalogQuote     `json:"peak,omitempty"`
 	Automatic      bool              `json:"automatic"`
+	DisplayOnly    bool              `json:"display_only,omitempty"`
 	Conditions     string            `json:"conditions"`
 	BillingDetails map[string]string `json:"billing_details,omitempty"`
 }
 
 type CatalogSource struct {
 	Provider      string         `json:"provider"`
+	Scope         string         `json:"scope,omitempty"`
 	URL           string         `json:"url"`
 	CheckedAt     time.Time      `json:"checked_at"`
 	VerifiedAt    time.Time      `json:"verified_at"`
@@ -83,6 +85,32 @@ var officialSources = []CatalogSource{
 	{Provider: "deepseek", URL: "https://api-docs.deepseek.com/quick_start/pricing/", NewsURL: "https://api-docs.deepseek.com/updates/"},
 	{Provider: "openai", URL: "https://developers.openai.com/api/docs/pricing.md", NewsURL: "https://developers.openai.com/api/docs/changelog.md"},
 	{Provider: "anthropic", URL: "https://platform.claude.com/docs/en/about-claude/pricing.md", NewsURL: "https://platform.claude.com/docs/en/models/overview.md"},
+	{Provider: "glm", Scope: "Z.ai 国际站 · USD；不适用于智谱国内站或 Coding Plan", URL: "https://docs.z.ai/guides/overview/pricing.md", NewsURL: "https://docs.z.ai/release-notes/new-released.md"},
+	{Provider: "minimax", Scope: "MiniMax 国际站 · USD · 按量 API；不适用于订阅套餐", URL: "https://platform.minimax.io/docs/guides/pricing-paygo.md", NewsURL: "https://platform.minimax.io/docs/release-notes/models.md"},
+	{Provider: "kimi", Scope: "Kimi 国际站 · USD；不适用于国内站或 Kimi Code 套餐", URL: "https://platform.kimi.ai/docs/pricing/chat.md", NewsURL: "https://platform.kimi.ai/docs/models.md"},
+	{Provider: "gemini", Scope: "Gemini Developer API · USD；不适用于 Vertex AI", URL: "https://ai.google.dev/gemini-api/docs/pricing", NewsURL: "https://ai.google.dev/gemini-api/docs/changelog"},
+	{Provider: "qwen", Scope: "阿里云国际站 · USD · 各地区 / 部署模式明细；不适用于国内人民币报价", URL: "https://www.alibabacloud.com/help/en/model-studio/model-pricing", NewsURL: "https://www.alibabacloud.com/help/en/model-studio/models"},
+}
+
+func catalogProvider(provider string) string {
+	switch provider {
+	case "zai":
+		return "glm"
+	case "moonshot":
+		return "kimi"
+	case "dashscope":
+		return "qwen"
+	}
+	return provider
+}
+
+func supportedCatalogProvider(provider string) bool {
+	for _, source := range officialSources {
+		if source.Provider == catalogProvider(provider) {
+			return true
+		}
+	}
+	return false
 }
 
 func digest(raw []byte) string { h := sha256.Sum256(raw); return hex.EncodeToString(h[:]) }
@@ -104,14 +132,24 @@ func (s *Store) catalogState() (CatalogState, error) {
 		return state, err
 	}
 	err = json.Unmarshal([]byte(raw), &state)
-	for i := range state.Sources {
-		for _, source := range officialSources {
-			if state.Sources[i].Provider == source.Provider {
-				state.Sources[i].URL = source.URL
-				state.Sources[i].NewsURL = source.NewsURL
+	if err != nil {
+		return state, err
+	}
+	merged := make([]CatalogSource, 0, len(officialSources))
+	for _, source := range officialSources {
+		for _, saved := range state.Sources {
+			if saved.Provider == source.Provider {
+				if saved.URL != source.URL {
+					saved.CheckedAt, saved.VerifiedAt = time.Time{}, time.Time{}
+				}
+				saved.URL, saved.NewsURL, saved.Scope = source.URL, source.NewsURL, source.Scope
+				source = saved
+				break
 			}
 		}
+		merged = append(merged, source)
 	}
+	state.Sources = merged
 	return state, err
 }
 
@@ -409,7 +447,7 @@ func catalogChanges(old, next CatalogSource, at time.Time) []CatalogEvent {
 func catalogQuote(state CatalogState, p Profile) (*CatalogSource, *CatalogQuote) {
 	for i := range state.Sources {
 		source := &state.Sources[i]
-		if source.Provider != p.Provider {
+		if source.Provider != catalogProvider(p.Provider) {
 			continue
 		}
 		for j := range source.Quotes {
@@ -438,7 +476,7 @@ func sameTariff(a, b Profile) bool {
 }
 
 func officialTariff(p Profile, q CatalogQuote, at time.Time, approve bool) (Profile, error) {
-	if !q.Automatic || p.ImageUSDPerImage > 0 {
+	if !q.Automatic || q.DisplayOnly || p.ImageUSDPerImage > 0 {
 		return p, fmt.Errorf("报价含未支持的计费条件，需人工核对")
 	}
 	if q.Peak != nil {
