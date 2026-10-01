@@ -1,0 +1,8 @@
+{
+  "keys": [{ "name": "primary", "value": "env.DEEPSEEK_API_KEY", "models": ["*"], "weight": 1 }],
+  "network_config": { "max_retries": 0, "max_conns_per_host": 20, "default_request_timeout_in_seconds": 180 },
+  "concurrency_and_buffer_size": { "concurrency": 2, "buffer_size": 100 },
+  "send_back_raw_request": false,
+  "send_back_raw_response": true,
+  "store_raw_request_response": false
+}

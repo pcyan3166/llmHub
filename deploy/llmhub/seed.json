@@ -1,0 +1,212 @@
+{
+  "projects": [
+    {
+      "id": "storepilot",
+      "name": "StorePilot",
+      "enabled": true,
+      "monthly_budget_usd": 50
+    },
+    {
+      "id": "followagents",
+      "name": "followagents",
+      "enabled": true,
+      "monthly_budget_usd": 50
+    },
+    {
+      "id": "followmpc",
+      "name": "followmpc",
+      "enabled": true,
+      "monthly_budget_usd": 50
+    },
+    {
+      "id": "followskills",
+      "name": "followskills",
+      "enabled": true,
+      "monthly_budget_usd": 50
+    },
+    {
+      "id": "stockinsky",
+      "name": "stockinsky",
+      "enabled": true,
+      "monthly_budget_usd": 50
+    }
+  ],
+  "pools": [
+    {
+      "id": "openai-shared",
+      "concurrency": 2,
+      "queue_size": 100,
+      "rpm": 60,
+      "tpm": 200000
+    },
+    {
+      "id": "anthropic-shared",
+      "concurrency": 1,
+      "queue_size": 100,
+      "rpm": 30,
+      "tpm": 100000
+    }
+  ],
+  "profiles": [
+    {
+      "id": "text.fast",
+      "provider": "openai",
+      "model": "CONFIGURE_TEXT_MODEL",
+      "key_name": "primary",
+      "pool_id": "openai-shared",
+      "max_output_tokens": 2048,
+      "input_usd_per_million": 1,
+      "output_usd_per_million": 4
+    },
+    {
+      "id": "text.quality",
+      "provider": "anthropic",
+      "model": "CONFIGURE_TEXT_MODEL",
+      "key_name": "primary",
+      "pool_id": "anthropic-shared",
+      "max_output_tokens": 4096,
+      "input_usd_per_million": 3,
+      "output_usd_per_million": 15
+    },
+    {
+      "id": "image.standard",
+      "provider": "openai",
+      "model": "CONFIGURE_IMAGE_MODEL",
+      "key_name": "primary",
+      "pool_id": "openai-shared",
+      "max_output_tokens": 1,
+      "input_usd_per_million": 0,
+      "output_usd_per_million": 0,
+      "image_usd_per_image": 0.05,
+      "image_size": "1024x1024",
+      "image_quality": "standard"
+    }
+  ],
+  "scenes": [
+    {
+      "id": "text.generate",
+      "project_id": "storepilot",
+      "name": "文本生成",
+      "profiles": [
+        "text.fast",
+        "text.quality"
+      ],
+      "endpoint": "/v1/chat/completions",
+      "queue_timeout_seconds": 60,
+      "timeout_seconds": 180,
+      "retries": 1
+    },
+    {
+      "id": "image.generate",
+      "project_id": "storepilot",
+      "name": "图片生成",
+      "profiles": [
+        "image.standard"
+      ],
+      "endpoint": "/v1/images/generations",
+      "queue_timeout_seconds": 60,
+      "timeout_seconds": 300,
+      "retries": 0
+    },
+    {
+      "id": "text.generate",
+      "project_id": "followagents",
+      "name": "文本生成",
+      "profiles": [
+        "text.fast",
+        "text.quality"
+      ],
+      "endpoint": "/v1/chat/completions",
+      "queue_timeout_seconds": 60,
+      "timeout_seconds": 180,
+      "retries": 1
+    },
+    {
+      "id": "image.generate",
+      "project_id": "followagents",
+      "name": "图片生成",
+      "profiles": [
+        "image.standard"
+      ],
+      "endpoint": "/v1/images/generations",
+      "queue_timeout_seconds": 60,
+      "timeout_seconds": 300,
+      "retries": 0
+    },
+    {
+      "id": "text.generate",
+      "project_id": "followmpc",
+      "name": "文本生成",
+      "profiles": [
+        "text.fast",
+        "text.quality"
+      ],
+      "endpoint": "/v1/chat/completions",
+      "queue_timeout_seconds": 60,
+      "timeout_seconds": 180,
+      "retries": 1
+    },
+    {
+      "id": "image.generate",
+      "project_id": "followmpc",
+      "name": "图片生成",
+      "profiles": [
+        "image.standard"
+      ],
+      "endpoint": "/v1/images/generations",
+      "queue_timeout_seconds": 60,
+      "timeout_seconds": 300,
+      "retries": 0
+    },
+    {
+      "id": "text.generate",
+      "project_id": "followskills",
+      "name": "文本生成",
+      "profiles": [
+        "text.fast",
+        "text.quality"
+      ],
+      "endpoint": "/v1/chat/completions",
+      "queue_timeout_seconds": 60,
+      "timeout_seconds": 180,
+      "retries": 1
+    },
+    {
+      "id": "image.generate",
+      "project_id": "followskills",
+      "name": "图片生成",
+      "profiles": [
+        "image.standard"
+      ],
+      "endpoint": "/v1/images/generations",
+      "queue_timeout_seconds": 60,
+      "timeout_seconds": 300,
+      "retries": 0
+    },
+    {
+      "id": "text.generate",
+      "project_id": "stockinsky",
+      "name": "文本生成",
+      "profiles": [
+        "text.fast",
+        "text.quality"
+      ],
+      "endpoint": "/v1/chat/completions",
+      "queue_timeout_seconds": 60,
+      "timeout_seconds": 180,
+      "retries": 1
+    },
+    {
+      "id": "image.generate",
+      "project_id": "stockinsky",
+      "name": "图片生成",
+      "profiles": [
+        "image.standard"
+      ],
+      "endpoint": "/v1/images/generations",
+      "queue_timeout_seconds": 60,
+      "timeout_seconds": 300,
+      "retries": 0
+    }
+  ]
+}

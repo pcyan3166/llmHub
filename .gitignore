@@ -46,6 +46,8 @@ transports/schema/config.schema.json
 *.db
 *.db-shm
 *.db-wal
+*.db.lock
+hub/data/
 transports/bifrost-http/v1.5.x
 
 # Test reports
