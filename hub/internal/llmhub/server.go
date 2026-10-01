@@ -354,7 +354,7 @@ func (s *Server) inference(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		profileID := cheapestRoute(c, scene, remaining, raw, s.now())
-		profile := c.Profile(profileID)
+		profile, credentialSource := c.resolvedProfile(projectID, profileID)
 		reroute := false
 		body, input, output, stream, err := prepareRequest(raw, scene.Endpoint, profile)
 		if err != nil {
@@ -401,7 +401,9 @@ func (s *Server) inference(w http.ResponseWriter, r *http.Request) {
 				writeError(w, 503, "official_price_unverified", priceErr.Error())
 				return
 			}
-			profile = c.Profile(profileID).priceAt(pricedAt)
+			profile, _ = c.resolvedProfile(projectID, profileID)
+			profile = profile.priceAt(pricedAt)
+			profile.AppliedPrice.CredentialSource = credentialSource
 			if source != nil {
 				profile.AppliedPrice.OfficialSourceURL = source.URL
 				profile.AppliedPrice.OfficialSourceHash = source.Hash
@@ -426,6 +428,12 @@ func (s *Server) inference(w http.ResponseWriter, r *http.Request) {
 			if _, err = s.store.Authenticate(bearer(r)); err != nil {
 				lease.Finish(0)
 				writeError(w, 401, "key_revoked", "project key was revoked while queued")
+				return
+			}
+			latest, latestSource := s.snapshot().resolvedProfile(projectID, profileID)
+			if latest.KeyName != profile.KeyName || latest.PoolID != profile.PoolID || latestSource != credentialSource {
+				lease.Finish(0)
+				writeError(w, 409, "credentials_changed", "upstream credentials changed while queued; submit a new request")
 				return
 			}
 			if err = s.store.Reserve(attempt, current.MonthlyBudgetUSD, reserve); err != nil {

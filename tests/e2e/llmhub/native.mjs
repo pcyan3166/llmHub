@@ -53,7 +53,7 @@ try {
   const bifrostURL = `http://127.0.0.1:${bifrostPort}`;
   const hubURL = `http://127.0.0.1:${hubPort}`;
   await writeFile(path.join(directory, "config.json"), JSON.stringify({ client: { initial_pool_size: 5, enable_logging: false, drop_excess_requests: false }, config_store: { enabled: false }, logs_store: { enabled: false }, providers: {
-    openai: { keys: [{ name: "primary", value: "mock-provider-key", models: ["*"], weight: 1 }], network_config: { base_url: `http://127.0.0.1:${port}/v1`, max_retries: 0 }, concurrency_and_buffer_size: { concurrency: 2, buffer_size: 10 } },
+    openai: { keys: [{ name: "primary", value: "mock-provider-key", models: ["*"], weight: 1 },{ name: "shared-default", value: "mock-default-key", models: ["*"], weight: 1 },{ name: "project-p", value: "mock-project-key", models: ["*"], weight: 1 }], network_config: { base_url: `http://127.0.0.1:${port}/v1`, max_retries: 0 }, concurrency_and_buffer_size: { concurrency: 2, buffer_size: 10 } },
     deepseek: { send_back_raw_response: true, send_back_raw_request: false, store_raw_request_response: false, keys: [{ name: "primary", value: "mock-deepseek-key", models: ["*"], weight: 1 }], network_config: { base_url: `http://127.0.0.1:${port}/v1`, max_retries: 0 }, concurrency_and_buffer_size: { concurrency: 2, buffer_size: 10 } },
   } }));
   await writeFile(path.join(directory, "seed.json"), JSON.stringify({ catalog: { enabled: false, interval_minutes: 360 }, projects: [{ id: "p", name: "Integration", enabled: true, monthly_budget_usd: 1 }], pools: [{ id: "shared", concurrency: 1, queue_size: 4, rpm: 50, tpm: 100000 }], profiles: [{ id: "text.fast", provider: "openai", model: "mock-text", key_name: "primary", pool_id: "shared", max_output_tokens: 32, input_usd_per_million: 1, output_usd_per_million: 2 }], scenes: [{ id: "copy", project_id: "p", name: "Copy", profiles: ["text.fast"], endpoint: "/v1/chat/completions", queue_timeout_seconds: 3, timeout_seconds: 5, retries: 0 }] }));
@@ -132,7 +132,37 @@ try {
   }
   assert.ok(requests.filter((r) => r.model === "mock-deepseek").every((r) => r.authorization === "Bearer mock-deepseek-key"));
   console.log(`DeepSeek native cached usage preserved by this Bifrost version: ${nativeCached !== undefined}; missing fields are conservatively estimated.`);
-  console.log("PASS: real Bifrost -> local OpenAI/DeepSeek mocks; alias/key selection, unary/SSE, peak tariffs, cached usage, missing-cache conservative estimates and historical snapshots");
+  const credentialConfig = await (await fetch(`${hubURL}/api/llmhub/config`, { headers: { Authorization: `Bearer ${admin}` } })).json();
+  credentialConfig.config.default_credentials = [{ provider: "openai", key_name: "shared-default", pool_id: "shared" }];
+  credentialConfig.config.projects[0].credentials = [{ provider: "openai", key_name: "project-p", pool_id: "shared" }];
+  credentialConfig.config.projects.push({ id: "q", name: "Default project", enabled: true, monthly_budget_usd: 1 });
+  credentialConfig.config.scenes.push({ ...credentialConfig.config.scenes[0], project_id: "q" });
+  const credentialsSaved = await fetch(`${hubURL}/api/llmhub/config`, { method: "PUT", headers: { Authorization: `Bearer ${admin}`, "Content-Type": "application/json" }, body: JSON.stringify(credentialConfig) });
+  assert.equal(credentialsSaved.status, 200, await credentialsSaved.text());
+  const qKey = await (await fetch(`${hubURL}/api/llmhub/keys`, { method: "POST", headers: { Authorization: `Bearer ${admin}`, "Content-Type": "application/json" }, body: JSON.stringify({ project_id: "q" }) })).json();
+  const qClient = new LLMHub({ baseURL: `${hubURL}/v1`, apiKey: qKey.token });
+  await client.text("copy", [{ role: "user", content: "project key" }]);
+  const projectStream = await client.stream("copy", [{ role: "user", content: "project stream key" }]);
+  assert.match(await projectStream.text(), /\[DONE\]/);
+  await qClient.text("copy", [{ role: "user", content: "default key" }]);
+  const routed = requests.filter((r) => r.path?.includes("chat/completions")).slice(-3);
+  assert.deepEqual(routed.map((r) => r.authorization), ["Bearer mock-project-key", "Bearer mock-project-key", "Bearer mock-default-key"]);
+  const credentialLedger = await (await fetch(`${hubURL}/api/llmhub/overview`, { headers: { Authorization: `Bearer ${admin}` } })).json();
+  assert.equal(credentialLedger.recent[0].price_snapshot.applied_price.credential_source, "default");
+  assert.equal(credentialLedger.recent[1].price_snapshot.key_name, "project-p");
+  const removeOverride = await (await fetch(`${hubURL}/api/llmhub/config`, { headers: { Authorization: `Bearer ${admin}` } })).json();
+  delete removeOverride.config.projects[0].credentials;
+  assert.equal((await fetch(`${hubURL}/api/llmhub/config`, { method: "PUT", headers: { Authorization: `Bearer ${admin}`, "Content-Type": "application/json" }, body: JSON.stringify(removeOverride) })).status, 200);
+  await client.text("copy", [{ role: "user", content: "inherit default" }]);
+  assert.equal(requests.filter((r) => r.path?.includes("chat/completions")).at(-1).authorization, "Bearer mock-default-key");
+  const invalidBinding = await (await fetch(`${hubURL}/api/llmhub/config`, { headers: { Authorization: `Bearer ${admin}` } })).json();
+  invalidBinding.config.projects[0].credentials = [{ provider: "openai", key_name: "missing-project-key", pool_id: "shared" }];
+  assert.equal((await fetch(`${hubURL}/api/llmhub/config`, { method: "PUT", headers: { Authorization: `Bearer ${admin}`, "Content-Type": "application/json" }, body: JSON.stringify(invalidBinding) })).status, 200);
+  const callsBeforeInvalidKey = requests.filter((r) => r.path?.includes("chat/completions")).length;
+  const invalidCall = await fetch(`${hubURL}/v1/chat/completions`, { method: "POST", headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" }, body: JSON.stringify({ model: "copy", messages: [{ role: "user", content: "invalid key must not use default" }] }) });
+  assert.equal(invalidCall.status, 400, await invalidCall.text());
+  assert.equal(requests.filter((r) => r.path?.includes("chat/completions")).length, callsBeforeInvalidKey, "missing project key must never dispatch using another Bifrost key");
+  console.log("PASS: real Bifrost -> local OpenAI/DeepSeek mocks; project/default/legacy key selection, unary/SSE, peak tariffs, cached usage, missing-cache conservative estimates and historical snapshots");
 } finally {
   clearTimeout(watchdog);
   await Promise.all(processes.map((p) => new Promise((resolve) => { if (p.exitCode !== null) return resolve(); p.once("exit", resolve); p.kill("SIGTERM"); setTimeout(() => p.kill("SIGKILL"), 2000).unref(); })));

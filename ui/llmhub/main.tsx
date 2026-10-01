@@ -43,6 +43,7 @@ import {
 import { Editor, Modal } from "./views/editor";
 import { CatalogView } from "./views/catalog";
 import { EstimateModal, PredictionDetails } from "./views/estimate";
+import { DefaultCredentialsModal } from "./views/credentials";
 import type { Entity, Config, Attempt } from "./types";
 import "./style.css";
 
@@ -81,6 +82,7 @@ function App() {
 	const [notice, setNotice] = useState("");
 	const [selected, setSelected] = useState<Attempt>();
 	const [estimating, setEstimating] = useState(false);
+	const [defaultCredentialsOpen, setDefaultCredentialsOpen] = useState(false);
 	const [revoke, setRevoke] = useState<string>();
 	const configQuery = useConfigQuery(undefined, { skip: !token, pollingInterval: 30000, skipPollingIfUnfocused: true });
 	const pricingQuery = usePricingQuery(undefined, {
@@ -528,6 +530,7 @@ function App() {
 													<th>月预算</th>
 													<th>状态</th>
 													<th>场景数</th>
+													<th>上游密钥</th>
 													<th />
 												</tr>
 											</thead>
@@ -543,6 +546,17 @@ function App() {
 															<span className={`status ${p.enabled ? "good" : "neutral"}`}>{p.enabled ? "启用" : "停用"}</span>
 														</td>
 														<td>{config.scenes.filter((s) => s.project_id === p.id).length}</td>
+														<td>
+															{p.credentials?.length ? (
+																p.credentials.map((b) => (
+																	<small key={b.provider}>
+																		{b.provider} / {b.key_name}
+																	</small>
+																))
+															) : (
+																<span>default</span>
+															)}
+														</td>
 														<td>
 															<Actions
 																onEdit={() => setEditor({ entity: "projects", row: { ...p } })}
@@ -913,6 +927,37 @@ function App() {
 										<section>
 											<div className="section-title">
 												<h2>
+													<KeyRound size={18} />
+													Default 上游密钥
+												</h2>
+												<button
+													className="icon"
+													title="编辑 default 上游密钥"
+													aria-label="编辑 default 上游密钥"
+													onClick={() => setDefaultCredentialsOpen(true)}
+													data-testid="hub-default-credentials-edit"
+												>
+													<Pencil size={17} />
+												</button>
+											</div>
+											{config.default_credentials?.length ? (
+												<dl>
+													{config.default_credentials.map((b) => (
+														<React.Fragment key={b.provider}>
+															<dt>{b.provider}</dt>
+															<dd>
+																{b.key_name} / {b.pool_id}
+															</dd>
+														</React.Fragment>
+													))}
+												</dl>
+											) : (
+												<span>沿用各 Profile 的默认密钥与限额池</span>
+											)}
+										</section>
+										<section>
+											<div className="section-title">
+												<h2>
 													<Server size={18} />
 													Bifrost
 												</h2>
@@ -967,6 +1012,17 @@ function App() {
 					busy={saveState.isLoading}
 					onClose={() => setEditor(undefined)}
 					onSave={saveEntity}
+				/>
+			)}
+			{defaultCredentialsOpen && config && (
+				<DefaultCredentialsModal
+					config={config}
+					busy={saveState.isLoading}
+					onClose={() => setDefaultCredentialsOpen(false)}
+					onSave={async (rows) => {
+						await commit({ ...config, default_credentials: rows.length ? rows : undefined });
+						setDefaultCredentialsOpen(false);
+					}}
 				/>
 			)}
 			{removal && (
@@ -1025,6 +1081,15 @@ function App() {
 					<dl className="request-detail">
 						{selected.price_snapshot?.applied_price && (
 							<>
+								<dt>上游密钥来源</dt>
+								<dd>
+									{selected.price_snapshot.applied_price.credential_source === "project"
+										? "项目专用"
+										: selected.price_snapshot.applied_price.credential_source === "default"
+											? "全局 default"
+											: "Profile 默认值"}{" "}
+									/ {selected.price_snapshot.key_name} / {selected.price_snapshot.pool_id}
+								</dd>
 								<dt>计价时段</dt>
 								<dd>
 									{selected.price_snapshot.applied_price.label} / {selected.price_snapshot.applied_price.window_id}

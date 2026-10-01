@@ -85,11 +85,32 @@ const pricing = z
 				}
 		}
 	});
+export const hubCredentialsSchema = z
+	.array(
+		z.object({
+			provider: id,
+			key_name: z
+				.string()
+				.min(1, "请输入 Bifrost 密钥名称")
+				.max(128)
+				.refine((v) => v.trim() === v && !/[\x00-\x1f\x7f]/.test(v), "密钥名称不能包含控制字符或首尾空格"),
+			pool_id: id,
+		}),
+	)
+	.max(64)
+	.superRefine((rows, ctx) => {
+		const seen = new Set<string>();
+		rows.forEach((row, index) => {
+			if (seen.has(row.provider)) ctx.addIssue({ code: "custom", path: [index, "provider"], message: "供应商不能重复" });
+			seen.add(row.provider);
+		});
+	});
 export const hubProjectSchema = z.object({
 	id,
 	name: z.string().trim().min(1, "名称不能为空").max(128),
 	enabled: z.boolean(),
 	monthly_budget_usd: money,
+	credentials: hubCredentialsSchema.optional(),
 });
 export const hubCatalogSchema = z.object({
 	enabled: z.boolean(),

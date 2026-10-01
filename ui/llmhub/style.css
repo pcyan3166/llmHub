@@ -706,6 +706,51 @@ pre {
 	font-size: 11px;
 	gap: 14px;
 }
+.credential-bindings {
+	margin-top: 20px;
+	border-top: 1px solid #dce1dd;
+	padding-top: 16px;
+}
+.credential-empty {
+	color: #66766c;
+	font-size: 12px;
+	padding-bottom: 12px;
+}
+.credential-row {
+	display: grid;
+	grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1fr) 36px;
+	align-items: end;
+	gap: 10px;
+	margin: 0;
+	padding: 12px 0;
+	border: 0;
+	border-bottom: 1px solid #e1e7e2;
+	min-width: 0;
+}
+.credential-row label {
+	display: grid;
+	gap: 6px;
+	min-width: 0;
+	font-size: 12px;
+}
+.credential-row input,
+.credential-row select {
+	width: 100%;
+	min-width: 0;
+}
+@media (max-width: 600px) {
+	.credential-row {
+		grid-template-columns: minmax(0, 1fr) 36px;
+	}
+	.credential-row label {
+		grid-column: 1;
+	}
+	.credential-row button {
+		grid-column: 2;
+		grid-row: 1 / 4;
+		align-self: center;
+	}
+}
 .prediction-detail + .request-detail {
 	border-top: 1px solid #dce1dd;
 	margin-top: 18px;

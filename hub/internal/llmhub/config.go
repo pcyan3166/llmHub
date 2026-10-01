@@ -8,18 +8,28 @@ import (
 )
 
 type Config struct {
-	Projects []Project        `json:"projects"`
-	Profiles []Profile        `json:"profiles"`
-	Scenes   []Scene          `json:"scenes"`
-	Pools    []Pool           `json:"pools"`
-	Catalog  *CatalogSettings `json:"catalog,omitempty"`
+	Projects           []Project            `json:"projects"`
+	Profiles           []Profile            `json:"profiles"`
+	Scenes             []Scene              `json:"scenes"`
+	Pools              []Pool               `json:"pools"`
+	Catalog            *CatalogSettings     `json:"catalog,omitempty"`
+	DefaultCredentials []ProviderCredential `json:"default_credentials,omitempty"`
 }
 
 type Project struct {
-	ID               string  `json:"id"`
-	Name             string  `json:"name"`
-	Enabled          bool    `json:"enabled"`
-	MonthlyBudgetUSD float64 `json:"monthly_budget_usd"`
+	ID               string               `json:"id"`
+	Name             string               `json:"name"`
+	Enabled          bool                 `json:"enabled"`
+	MonthlyBudgetUSD float64              `json:"monthly_budget_usd"`
+	Credentials      []ProviderCredential `json:"credentials,omitempty"`
+}
+
+// Secrets remain in Bifrost. A binding selects a named upstream key and its
+// actual quota pool; creating another key never creates another account quota.
+type ProviderCredential struct {
+	Provider string `json:"provider"`
+	KeyName  string `json:"key_name"`
+	PoolID   string `json:"pool_id"`
 }
 
 type Profile struct {
@@ -85,6 +95,14 @@ func (c Config) Validate() error {
 		}
 		pools[p.ID] = true
 	}
+	if err := validateCredentials(c.DefaultCredentials, pools); err != nil {
+		return fmt.Errorf("default credentials: %w", err)
+	}
+	for _, p := range c.Projects {
+		if err := validateCredentials(p.Credentials, pools); err != nil {
+			return fmt.Errorf("project %q credentials: %w", p.ID, err)
+		}
+	}
 	for _, p := range c.Profiles {
 		if p.FollowOfficial && (!supportedCatalogProvider(p.Provider) || p.ImageUSDPerImage > 0) || p.OfficialTerms != "" && !catalogHashPattern.MatchString(p.OfficialTerms) || p.OfficialCalendarHash != "" && !catalogHashPattern.MatchString(p.OfficialCalendarHash) || p.OfficialCalendarYear != 0 && (p.OfficialCalendarYear < 2000 || p.OfficialCalendarYear > 2200) {
 			return fmt.Errorf("invalid official price tracking for profile %q", p.ID)
@@ -125,6 +143,37 @@ func (c Config) Validate() error {
 		scenes[key] = true
 	}
 	return nil
+}
+
+func validateCredentials(bindings []ProviderCredential, pools map[string]bool) error {
+	if len(bindings) > 64 {
+		return fmt.Errorf("too many provider bindings")
+	}
+	seen := map[string]bool{}
+	for _, b := range bindings {
+		if !idPattern.MatchString(b.Provider) || seen[b.Provider] || strings.TrimSpace(b.KeyName) != b.KeyName || b.KeyName == "" || len(b.KeyName) > 128 || strings.IndexFunc(b.KeyName, func(r rune) bool { return r < 32 || r == 127 }) >= 0 || !pools[b.PoolID] {
+			return fmt.Errorf("invalid or duplicate provider binding %q", b.Provider)
+		}
+		seen[b.Provider] = true
+	}
+	return nil
+}
+
+func (c Config) resolvedProfile(projectID, profileID string) (Profile, string) {
+	p := c.Profile(profileID)
+	project, _ := c.Project(projectID)
+	for _, group := range []struct {
+		bindings []ProviderCredential
+		source   string
+	}{{project.Credentials, "project"}, {c.DefaultCredentials, "default"}} {
+		for _, b := range group.bindings {
+			if b.Provider == p.Provider {
+				p.KeyName, p.PoolID = b.KeyName, b.PoolID
+				return p, group.source
+			}
+		}
+	}
+	return p, "profile_default"
 }
 
 func validPrice(v float64) bool { return !math.IsNaN(v) && !math.IsInf(v, 0) && v >= 0 && v <= 1000000 }

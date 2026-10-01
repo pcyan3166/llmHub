@@ -37,6 +37,7 @@ type AppliedPrice struct {
 	UsageKnown           bool       `json:"usage_known"`
 	CacheWriteTokens     int64      `json:"cache_write_tokens"`
 	CacheWriteUsageKnown bool       `json:"cache_write_usage_known"`
+	CredentialSource     string     `json:"credential_source,omitempty"`
 	OfficialSourceURL    string     `json:"official_source_url,omitempty"`
 	OfficialSourceHash   string     `json:"official_source_hash,omitempty"`
 	OfficialVerifiedAt   *time.Time `json:"official_verified_at,omitempty"`

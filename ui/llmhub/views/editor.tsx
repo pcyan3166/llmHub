@@ -1,9 +1,13 @@
-import { useEffect, useRef, useState } from "react";
+import { useState } from "react";
 import { useForm } from "react-hook-form";
-import { X, Save } from "lucide-react";
+import { Save } from "lucide-react";
 import { hubSchemas } from "../../lib/types/llmhubschemas";
-import type { Config, Entity, PriceSchedule } from "../types";
+import type { Config, Entity, PriceSchedule, ProviderCredential } from "../types";
 import { PricingEditor } from "./pricing";
+import { CredentialBindingsEditor } from "./credentials";
+import { Modal } from "./modal";
+
+export { Modal } from "./modal";
 
 const labels: Record<string, string> = {
 	id: "标识",
@@ -64,23 +68,6 @@ const initial = {
 		routing_policy: "ordered",
 	},
 };
-export function Modal({ title, children, onClose }: { title: string; children: React.ReactNode; onClose: () => void }) {
-	const ref = useRef<HTMLDialogElement>(null);
-	useEffect(() => {
-		ref.current?.showModal();
-	}, []);
-	return (
-		<dialog ref={ref} onCancel={onClose} className="modal">
-			<header>
-				<h2>{title}</h2>
-				<button type="button" className="icon" title="关闭" aria-label="关闭" onClick={onClose}>
-					<X size={18} />
-				</button>
-			</header>
-			{children}
-		</dialog>
-	);
-}
 export function Editor({
 	entity,
 	row,
@@ -106,9 +93,11 @@ export function Editor({
 	} = useForm<Record<string, unknown>>({ defaultValues: defaults });
 	const [route, setRoute] = useState<string[]>((defaults.profiles as string[]) ?? []);
 	const [pricing, setPricing] = useState<PriceSchedule | undefined>(defaults.pricing as PriceSchedule | undefined);
+	const [credentials, setCredentials] = useState<ProviderCredential[]>((defaults.credentials as ProviderCredential[]) ?? []);
 	const submit = handleSubmit(async (value) => {
 		if (entity === "scenes") value.profiles = route;
 		if (entity === "profiles") value.pricing = pricing;
+		if (entity === "projects") value.credentials = credentials.length ? credentials : undefined;
 		const result = hubSchemas[entity].safeParse(value);
 		if (!result.success) {
 			for (const issue of result.error.issues) setError(String(issue.path[0] ?? "root"), { message: issue.message });
@@ -135,7 +124,10 @@ export function Editor({
 				<div className="form-grid">
 					{Object.entries(defaults)
 						.filter(
-							([key]) => !["pricing", "applied_price", "official_terms", "official_calendar_year", "official_calendar_hash"].includes(key),
+							([key]) =>
+								!["credentials", "pricing", "applied_price", "official_terms", "official_calendar_year", "official_calendar_hash"].includes(
+									key,
+								),
 						)
 						.map(([key, value]) => (
 							<label className={key === "profiles" ? "wide" : ""} key={key}>
@@ -197,6 +189,14 @@ export function Editor({
 				</div>
 				{entity === "profiles" && (
 					<PricingEditor value={pricing} onChange={setPricing} error={errors.pricing ? String(errors.pricing.message) : undefined} />
+				)}
+				{entity === "projects" && (
+					<CredentialBindingsEditor value={credentials} onChange={setCredentials} config={config} prefix="project" busy={busy} />
+				)}
+				{errors.credentials && (
+					<div className="error" role="alert">
+						{String(errors.credentials.message ?? "密钥引用无效")}
+					</div>
 				)}
 				{errors.root && (
 					<p className="error" role="alert">

@@ -25,6 +25,136 @@ func testConfig() Config {
 	}
 }
 
+func TestProjectUpstreamCredentialsDispatchPredictionAndNoFallback(t *testing.T) {
+	var keys []string
+	server, store, token := testServer(t, func(w http.ResponseWriter, r *http.Request) {
+		key := r.Header.Get("X-BF-API-Key")
+		keys = append(keys, key)
+		if key == "broken" {
+			w.WriteHeader(401)
+			io.WriteString(w, `{"error":{"message":"bad key"}}`)
+			return
+		}
+		if strings.Contains(r.URL.RawQuery, "stream") {
+			t.Fatal("unexpected query")
+		}
+		io.WriteString(w, `{"usage":{"prompt_tokens":10,"completion_tokens":5}}`)
+	})
+	server.now = func() time.Time { return time.Now().Add(10 * time.Second) }
+	update := func(binding []ProviderCredential) {
+		t.Helper()
+		c, v, err := store.Config()
+		if err != nil {
+			t.Fatal(err)
+		}
+		c.DefaultCredentials = []ProviderCredential{{Provider: "openai", KeyName: "global", PoolID: "shared"}}
+		found := false
+		for _, p := range c.Pools {
+			if p.ID == "dedicated" {
+				found = true
+			}
+		}
+		if !found {
+			c.Pools = append(c.Pools, Pool{ID: "dedicated", Concurrency: 1, RPM: 100, TPM: 100000})
+		}
+		c.Projects[0].Credentials = binding
+		raw, _ := json.Marshal(map[string]any{"config": c, "version": v})
+		if w := call(server, "PUT", "/api/llmhub/config", testAdmin, string(raw)); w.Code != 200 {
+			t.Fatal(w.Code, w.Body.String())
+		}
+	}
+	request := `{"model":"copy","messages":[{"role":"user","content":"same"}]}`
+	update(nil)
+	if w := call(server, "POST", "/v1/chat/completions", token, request); w.Code != 200 {
+		t.Fatal(w.Body.String())
+	}
+	update([]ProviderCredential{{Provider: "openai", KeyName: "private", PoolID: "dedicated"}})
+	sharedLease, err := server.scheduler.Acquire(context.Background(), "shared", "occupied-default", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if sharedLease != nil {
+			sharedLease.Finish(0)
+		}
+	}()
+	if w := call(server, "POST", "/v1/chat/completions", token, request); w.Code != 200 {
+		t.Fatal("dedicated credential used blocked default pool", w.Body.String())
+	}
+	sharedLease.Finish(0)
+	sharedLease = nil
+	rows, err := store.Recent("storepilot", 10)
+	if err != nil || rows[0].PriceSnapshot.KeyName != "private" || rows[0].PoolID != "dedicated" || rows[0].PriceSnapshot.AppliedPrice.CredentialSource != "project" || rows[0].Prediction.Samples != 0 {
+		t.Fatal("credentials leaked into shared prediction/pool", rows, err)
+	}
+	estimate := `{"project_id":"storepilot","scene_id":"copy","request":` + request + `}`
+	if w := call(server, "POST", "/api/llmhub/estimate", testAdmin, estimate); w.Code != 200 || !strings.Contains(w.Body.String(), `"samples":1`) {
+		t.Fatal("estimate did not resolve project key", w.Code, w.Body.String())
+	}
+	update([]ProviderCredential{{Provider: "openai", KeyName: "broken", PoolID: "shared"}})
+	if w := call(server, "POST", "/v1/chat/completions", token, request); w.Code != 401 {
+		t.Fatal(w.Code, w.Body.String())
+	}
+	if len(keys) != 3 || keys[0] != "global" || keys[1] != "private" || keys[2] != "broken" {
+		t.Fatal("project failure used default", keys)
+	}
+	update(nil)
+	if w := call(server, "POST", "/v1/chat/completions", token, request); w.Code != 200 {
+		t.Fatal(w.Body.String())
+	}
+	rows, err = store.Recent("storepilot", 10)
+	if err != nil || rows[0].PriceSnapshot.KeyName != "global" || rows[0].Prediction.Samples != 1 || rows[0].PriceSnapshot.AppliedPrice.CredentialSource != "default" {
+		t.Fatal("removing override lost default/history", rows, err)
+	}
+}
+
+func TestQueuedCredentialChangeStopsDispatch(t *testing.T) {
+	var calls atomic.Int64
+	server, store, token := testServer(t, func(w http.ResponseWriter, r *http.Request) { calls.Add(1); io.WriteString(w, `{}`) })
+	hold, err := server.scheduler.Acquire(context.Background(), "shared", "hold", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if hold != nil {
+			hold.Finish(0)
+		}
+	}()
+	result := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		result <- call(server, "POST", "/v1/chat/completions", token, `{"model":"copy","messages":[{"role":"user","content":"hello"}]}`)
+	}()
+	deadline := time.Now().Add(time.Second)
+	for server.scheduler.Stats()[0].Queued == 0 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if server.scheduler.Stats()[0].Queued == 0 {
+		t.Fatal("request never queued")
+	}
+	c, v, _ := store.Config()
+	c.DefaultCredentials = []ProviderCredential{{Provider: "openai", KeyName: "rotated", PoolID: "shared"}}
+	raw, _ := json.Marshal(map[string]any{"config": c, "version": v})
+	if w := call(server, "PUT", "/api/llmhub/config", testAdmin, string(raw)); w.Code != 200 {
+		t.Fatal(w.Code, w.Body.String())
+	}
+	hold.Finish(0)
+	hold = nil
+	select {
+	case w := <-result:
+		if w.Code != 409 || !strings.Contains(w.Body.String(), "credentials_changed") {
+			t.Fatal(w.Code, w.Body.String())
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("queued credential change hung")
+	}
+	if calls.Load() != 0 {
+		t.Fatal("stale credentials dispatched")
+	}
+	if rows, err := store.Recent("storepilot", 10); err != nil || len(rows) != 0 {
+		t.Fatal("rejected queue change billed", rows, err)
+	}
+}
+
 func TestPredictionEstimateLearningAndConservativeBudget(t *testing.T) {
 	var calls atomic.Int64
 	server, store, token := testServer(t, func(w http.ResponseWriter, r *http.Request) {

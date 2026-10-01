@@ -77,6 +77,16 @@ DeepSeek 示例核对日期为 2026-10-01，价格来源与年度日历来源记
 
 本地预览更新前以 SQLite 在线备份保留了原有配置、项目密钥和记录。demo 新增可选 `-db` 参数，已有数据库不会被 seed 覆盖或重复签发演示密钥；相关重启回归已通过。默认不传 `-db` 时仍是退出即清理的临时演示。
 
+## 项目与 default 上游密钥
+
+2026-10-01 增加按供应商的 `Project.credentials` 和 `Config.default_credentials`，选择顺序为项目专用、全局 default、旧 Profile 默认值。真实 API Key 仍由 Bifrost 管理，llmHub 只保存命名引用及对应限额池。控制台项目编辑和设置页均可配置，请求详情显示实际密钥来源、名称和池；移除项目覆盖后恢复继承，不重签业务项目密钥。详细操作与字段片段见 [上游密钥配置](credentials.md)。
+
+派发、队列、成本预测统一解析有效绑定；按实际配额决定共享或独立限额池，不把新建 API Key 当成新增配额。缓存预测隔离不同密钥 / 池的证据；历史价格与选钥快照不可变。排队期间绑定变化返回 `409 credentials_changed`，不派发或扣预算；错误项目绑定不会自动使用 default。
+
+通过完整 Go race / vet、Node / Python SDK、UI 类型 / 构建 / 格式检查、真实 Bifrost v2.2.4 本地模拟链路及十页桌面 / 手机 Playwright 回归。覆盖项目/default/旧 Profile 选钥、普通和 SSE、缺失密钥返回 400 且未调用其他密钥、独立池不被 default 池阻塞、预测历史隔离、排队期间轮换、重复供应商校验、保存与移除继承，以及请求审计来源展示。
+
+本次仅修改独立 `hub/` 与 companion 控制台，未更改上游 provider wire 层；上游付费 provider harness 不适用，选钥路径已用真实 Bifrost 加本地模拟供应商验证。没有使用真实供应商凭证或产生模型费用。本地预览数据库升级前备份为 `/private/tmp/llmhub-before-project-credentials.db`，升级和 QA 清理后的业务配置与备份逐项相同，原有项目及密钥保留。
+
 ## 尚未验证的环境项
 
 本机 Docker daemon 没有运行，未实际构建或启动 Compose 容器。上游要求 Go 1.27，本机为 Go 1.26.5，因此没有编译上游 Bifrost dev 树。控制层使用独立 Go 1.26 模块并已编译测试。

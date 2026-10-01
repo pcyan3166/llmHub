@@ -11,6 +11,7 @@ const output = path.resolve("test-results/llmhub");
 const pricingID = `qa-pricing-${Date.now()}`;
 const sceneID = `qa-route-${Date.now()}`;
 const projectID = `qa-project-${Date.now()}`;
+const credentialProvider = `qa-default-${Date.now()}`;
 const headers = { Authorization: `Bearer ${admin}` };
 let catalogRestore;
 let catalogTestSettings;
@@ -138,22 +139,67 @@ try {
   assert.equal(restored.status(), 200, "catalog settings restoration failed");
   catalogTestSettings = undefined;
   await page.getByTitle("刷新数据", { exact: true }).click();
+  await page.getByTestId("hub-nav-settings").click();
+  await page.getByTestId("hub-default-credentials-edit").click();
+  const defaultIndex = catalogConfig.config.default_credentials?.length ?? 0;
+  await page.getByTestId("hub-default-credential-add").click();
+  await page.getByTestId(`hub-default-credential-provider-${defaultIndex}`).fill(credentialProvider);
+  await page.getByTestId(`hub-default-credential-key-${defaultIndex}`).fill("qa-shared-key");
+  await page.getByTestId(`hub-default-credential-pool-${defaultIndex}`).selectOption(catalogConfig.config.pools[0].id);
+  await page.getByTestId("hub-default-credential-add").click();
+  await page.getByTestId(`hub-default-credential-provider-${defaultIndex + 1}`).fill(credentialProvider);
+  await page.getByTestId(`hub-default-credential-key-${defaultIndex + 1}`).fill("qa-duplicate-key");
+  await page.getByTestId(`hub-default-credential-pool-${defaultIndex + 1}`).selectOption(catalogConfig.config.pools[0].id);
+  await page.getByTestId("hub-default-credential-save").click();
+  await page.getByRole("alert").filter({ hasText: "供应商" }).waitFor();
+  await page.getByTestId(`hub-default-credential-remove-${defaultIndex + 1}`).click();
+  await page.screenshot({ path: path.join(output, "desktop-default-credentials.png") });
+  await page.setViewportSize({ width: 390, height: 844 });
+  assert.equal(await page.locator("dialog").evaluate((el) => el.scrollWidth > el.clientWidth + 1), false, "mobile default credential dialog overflow");
+  await page.screenshot({ path: path.join(output, "mobile-default-credentials.png") });
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  await page.getByTestId("hub-default-credential-save").click();
+  await page.locator("dialog").waitFor({ state: "hidden" });
+  const savedDefaults = await (await page.request.get(`${url}/api/llmhub/config`, { headers })).json();
+  assert.deepEqual(savedDefaults.config.default_credentials.find((b) => b.provider === credentialProvider), { provider: credentialProvider, key_name: "qa-shared-key", pool_id: catalogConfig.config.pools[0].id });
   await page.getByTestId("hub-nav-projects").click();
   await page.getByTestId("hub-create").click();
   const id = projectID;
   await page.getByTestId("hub-field-id").fill(id);
   await page.getByTestId("hub-field-name").fill("QA Project");
   await page.getByTestId("hub-field-monthly_budget_usd").fill("25");
+  await page.getByTestId("hub-project-credential-add").click();
+  await page.getByTestId("hub-project-credential-provider-0").fill("openai");
+  await page.getByTestId("hub-project-credential-key-0").fill("qa-project-key");
+  await page.getByTestId("hub-project-credential-pool-0").selectOption(catalogConfig.config.pools[0].id);
+  await page.screenshot({ path: path.join(output, "desktop-project-credentials.png") });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.getByTestId("hub-project-credential-0").scrollIntoViewIfNeeded();
+  assert.equal(await page.locator("dialog").evaluate((el) => el.scrollWidth > el.clientWidth + 1), false, "mobile project credential dialog overflow");
+  await page.screenshot({ path: path.join(output, "mobile-project-credentials.png") });
+  await page.setViewportSize({ width: 1440, height: 1000 });
   await page.getByTestId("hub-editor-save").click();
   await page.locator("dialog").waitFor({ state: "hidden" });
   const row = page.getByRole("row").filter({ hasText: id });
   await row.waitFor();
   await row.getByTestId("hub-edit").click();
+  assert.equal(await page.getByTestId("hub-project-credential-key-0").inputValue(), "qa-project-key");
+  await page.getByTestId("hub-project-credential-add").click();
+  await page.getByTestId("hub-project-credential-provider-1").fill("openai");
+  await page.getByTestId("hub-project-credential-key-1").fill("qa-project-duplicate");
+  await page.getByTestId("hub-project-credential-pool-1").selectOption(catalogConfig.config.pools[0].id);
+  await page.getByTestId("hub-editor-save").click();
+  await page.getByRole("alert").filter({ hasText: "供应商" }).waitFor();
+  await page.getByTestId("hub-project-credential-remove-1").click();
+  await page.getByTestId("hub-project-credential-remove-0").click();
   await page.getByTestId("hub-field-name").fill("QA Project Updated");
   await page.getByTestId("hub-editor-save").click();
   await page.locator("dialog").waitFor({ state: "hidden" });
   await row.getByText("QA Project Updated", { exact: true }).waitFor();
   assert.match(await row.innerText(), /QA Project Updated/);
+  await row.getByText("default", { exact: true }).waitFor();
+  const savedProject = await (await page.request.get(`${url}/api/llmhub/config`, { headers })).json();
+  assert.equal(savedProject.config.projects.find((p) => p.id === projectID).credentials, undefined, "removing project bindings must restore default inheritance");
   await row.getByTestId("hub-delete").click();
   await page.getByTestId("hub-delete-confirm").click();
   await row.waitFor({ state: "hidden" });
@@ -243,6 +289,8 @@ try {
   await page.getByTestId("hub-refresh").click();
   await page.getByTestId("hub-search").fill(predictedAttempt.request_id);
   await page.getByTestId("hub-request-row").first().click();
+  await page.getByText("上游密钥来源", { exact: true }).waitFor();
+  await page.locator("dialog").getByText(`Profile 默认值 / ${predictedAttempt.price_snapshot.key_name} / ${predictedAttempt.price_snapshot.pool_id}`, { exact: true }).waitFor();
   await page.getByTestId("hub-prediction-details").waitFor();
   await page.getByText("实际费用减预测费用", { exact: true }).waitFor();
   await page.screenshot({ path: path.join(output, "desktop-request-prediction.png") });
@@ -272,7 +320,7 @@ try {
   await page.getByTestId("hub-delete-confirm").click();
   await pricingRow.waitFor({ state: "hidden" });
   assert.deepEqual(errors, [], "uncaught browser errors");
-  console.log("PASS: login recovery, ten views, official catalog/announcement/failure/approval/check contracts, CRUD, time pricing/current rates/cache/holiday/overlap validation, cost routing, no-call cost prediction, request prediction/error snapshots, key issuance/revocation, image, SSE, desktop/mobile layout; screenshots in test-results/llmhub");
+  console.log("PASS: login recovery, ten views, project/default credential persistence/inheritance/duplicate validation, official catalog/announcement/failure/approval/check contracts, CRUD, time pricing/current rates/cache/holiday/overlap validation, cost routing, no-call cost prediction, request prediction/error snapshots, key issuance/revocation, image, SSE, desktop/mobile layout; screenshots in test-results/llmhub");
 } finally {
   clearTimeout(watchdog);
   await browser.close();
@@ -282,8 +330,13 @@ try {
     const { config, version } = await response.json();
     const next = { ...config, projects: config.projects.filter((p) => p.id !== projectID), profiles: config.profiles.filter((p) => p.id !== pricingID), scenes: config.scenes.filter((s) => s.id !== sceneID) };
     const restoreCatalog = catalogTestSettings && config.catalog?.enabled === catalogTestSettings.enabled && config.catalog?.interval_minutes === catalogTestSettings.interval_minutes;
+    const restoreCredentials = config.default_credentials?.some((b) => b.provider === credentialProvider);
+    if (restoreCredentials) {
+      const remaining = config.default_credentials.filter((b) => b.provider !== credentialProvider);
+      next.default_credentials = remaining.length ? remaining : undefined;
+    }
     if (restoreCatalog) next.catalog = catalogRestore;
-    if (restoreCatalog || next.projects.length !== config.projects.length || next.profiles.length !== config.profiles.length || next.scenes.length !== config.scenes.length) {
+    if (restoreCatalog || restoreCredentials || next.projects.length !== config.projects.length || next.profiles.length !== config.profiles.length || next.scenes.length !== config.scenes.length) {
       const cleaned = await fetch(`${url}/api/llmhub/config`, { method: "PUT", headers: { ...headers, "Content-Type": "application/json" }, body: JSON.stringify({ config: next, version }), signal: AbortSignal.timeout(5000) });
       assert.equal(cleaned.status, 200, "QA fixture cleanup failed; unrelated configuration was not overwritten");
     }

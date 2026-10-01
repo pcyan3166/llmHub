@@ -8,6 +8,7 @@
 - OpenAI SDK 兼容的 Chat Completions、Responses、Embeddings 与非流式 Images Generation。
 - Chat / Responses SSE 透传，完成后从供应商 usage 结算；流式中断保留预估费用。
 - 项目级密钥，数据库只保存 SHA-256 摘要；签发时显示一次明文，支持吊销。
+- 按供应商配置项目专用上游密钥引用，未配置时继承全局 default；兼容已有 Profile 默认值。
 - 多项目共用的 FIFO 队列、并发、60 秒滑动窗口 RPM / TPM、排队超时、取消和 429 冷却。
 - 在发起调用前原子预留月预算，结束后结算；重试和备用路由独立记录。
 - 项目月度用量、场景 / 模型成本明细、请求记录、每次调用价格快照、配置版本历史。
@@ -54,7 +55,7 @@ GOTOOLCHAIN=local go run ./cmd/demo -listen 127.0.0.1:8090
 
 1. 将 `deploy/llmhub/environment.example` 作为本机 `.env` 的模板，填写真正的密钥和三个不同的随机管理秘密。`.env` 不提交到 Git。加密密钥应与数据库一起备份，后续不要随意更换。
 2. `deploy/llmhub/seed.json` 中 `CONFIGURE_TEXT_MODEL` / `CONFIGURE_IMAGE_MODEL` 都是占位符。修改为账户真实可用的模型，并按供应商当前价格配置单价。示例单价仅供演示，不是模型官方报价。
-3. 供应商 `primary` 密钥名称必须与 Profile 的 `key_name` 一致。默认 Bifrost 配置只有 OpenAI；使用 `text.quality` 前，在 Bifrost 控制台添加 Anthropic 的 `primary` 密钥，或从场景路由移除这个备用 Profile。
+3. 在 Bifrost 登记供应商密钥，再在 llmHub 的项目配置 / Default 上游密钥中引用其名称。选择顺序为项目配置、全局 default、Profile 的 `key_name` / `pool_id`，详见 [项目与 default 上游密钥](credentials.md)。默认 Bifrost 配置只有 OpenAI；使用 `text.quality` 前，在 Bifrost 控制台添加 Anthropic 的 `primary` 密钥，或从场景路由移除这个备用 Profile。
 4. 同一个供应商账户 / 组织 / 模型限额组使用同一个 `pool_id`，即使业务项目、Profile 或 API Key 不同。按供应商真实限制设置 RPM、TPM 和并发；业务项目必须全部经过 llmHub。
 5. seed 仅在数据库为空时导入。此后使用控制台或带版本的配置 API 修改配置，编辑 seed 不会覆盖现有数据库。
 

@@ -146,7 +146,8 @@ func (s *Server) estimate(w http.ResponseWriter, r *http.Request) {
 	}
 	candidates := []candidate{}
 	for _, id := range scene.Profiles {
-		profile := c.Profile(id).priceAt(at)
+		profile, _ := c.resolvedProfile(body.ProjectID, id)
+		profile = profile.priceAt(at)
 		if _, err := s.catalog.verifiedProfile(c.Profile(id)); err != nil {
 			candidates = append(candidates, candidate{ProfileID: id, Error: err.Error()})
 			continue

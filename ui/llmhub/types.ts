@@ -1,4 +1,5 @@
-export type Project = { id: string; name: string; enabled: boolean; monthly_budget_usd: number };
+export type ProviderCredential = { provider: string; key_name: string; pool_id: string };
+export type Project = { id: string; name: string; enabled: boolean; monthly_budget_usd: number; credentials?: ProviderCredential[] };
 export type PriceWindow = {
 	id: string;
 	label: string;
@@ -27,6 +28,7 @@ export type AppliedPrice = {
 	usage_known?: boolean;
 	cache_write_tokens?: number;
 	cache_write_usage_known?: boolean;
+	credential_source?: "project" | "default" | "profile_default";
 	official_source_url?: string;
 	official_source_hash?: string;
 	official_verified_at?: string;
@@ -65,7 +67,14 @@ export type Scene = {
 export type PricingResponse = { at: string; profiles: Profile[]; verification: CatalogProfile[] };
 export type Pool = { id: string; concurrency: number; queue_size: number; rpm: number; tpm: number };
 export type CatalogSettings = { enabled: boolean; interval_minutes: number };
-export type Config = { projects: Project[]; profiles: Profile[]; scenes: Scene[]; pools: Pool[]; catalog?: CatalogSettings };
+export type Config = {
+	projects: Project[];
+	profiles: Profile[];
+	scenes: Scene[];
+	pools: Pool[];
+	catalog?: CatalogSettings;
+	default_credentials?: ProviderCredential[];
+};
 export type CatalogQuote = {
 	name: string;
 	model?: string;
