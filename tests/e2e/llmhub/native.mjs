@@ -1,6 +1,6 @@
 // Optional integration with a real Bifrost executable and a local mock provider.
 import assert from "node:assert/strict";
-import { mkdtemp, writeFile, rm } from "node:fs/promises";
+import { mkdtemp, writeFile, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { spawn } from "node:child_process";
@@ -52,7 +52,7 @@ try {
   const hubPort = await freePort();
   const bifrostURL = `http://127.0.0.1:${bifrostPort}`;
   const hubURL = `http://127.0.0.1:${hubPort}`;
-  await writeFile(path.join(directory, "config.json"), JSON.stringify({ client: { initial_pool_size: 5, enable_logging: false, drop_excess_requests: false }, config_store: { enabled: false }, logs_store: { enabled: false }, providers: {
+  await writeFile(path.join(directory, "config.json"), JSON.stringify({ encryption_key: "native-local-fixture-encryption-secret", client: { initial_pool_size: 5, enable_logging: false, drop_excess_requests: false }, config_store: { enabled: true, type: "sqlite", config: { path: path.join(directory,"bifrost.db") } }, logs_store: { enabled: false }, providers: {
     openai: { keys: [{ name: "primary", value: "mock-provider-key", models: ["*"], weight: 1 },{ name: "shared-default", value: "mock-default-key", models: ["*"], weight: 1 },{ name: "project-p", value: "mock-project-key", models: ["*"], weight: 1 }], network_config: { base_url: `http://127.0.0.1:${port}/v1`, max_retries: 0 }, concurrency_and_buffer_size: { concurrency: 2, buffer_size: 10 } },
     deepseek: { send_back_raw_response: true, send_back_raw_request: false, store_raw_request_response: false, keys: [{ name: "primary", value: "mock-deepseek-key", models: ["*"], weight: 1 }], network_config: { base_url: `http://127.0.0.1:${port}/v1`, max_retries: 0 }, concurrency_and_buffer_size: { concurrency: 2, buffer_size: 10 } },
   } }));
@@ -162,10 +162,30 @@ try {
   const invalidCall = await fetch(`${hubURL}/v1/chat/completions`, { method: "POST", headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" }, body: JSON.stringify({ model: "copy", messages: [{ role: "user", content: "invalid key must not use default" }] }) });
   assert.equal(invalidCall.status, 400, await invalidCall.text());
   assert.equal(requests.filter((r) => r.path?.includes("chat/completions")).length, callsBeforeInvalidKey, "missing project key must never dispatch using another Bifrost key");
-  console.log("PASS: real Bifrost -> local OpenAI/DeepSeek mocks; project/default/legacy key selection, unary/SSE, peak tariffs, cached usage, missing-cache conservative estimates and historical snapshots");
+  const directConfig = await (await fetch(`${hubURL}/api/llmhub/config`, { headers: { Authorization: `Bearer ${admin}` } })).json();
+  directConfig.config.projects[0].credentials = [{ provider: "openai", api_key: "mock-pasted-platform-api-key" }];
+  const directSaved = await fetch(`${hubURL}/api/llmhub/config`, { method: "PUT", headers: { Authorization: `Bearer ${admin}`, "Content-Type": "application/json" }, body: JSON.stringify(directConfig) });
+  const directText = await directSaved.text();
+  assert.equal(directSaved.status, 200, directText);
+  assert.doesNotMatch(directText, /mock-pasted-platform-api-key|"api_key"/);
+  const directBinding = JSON.parse(directText).config.projects[0].credentials[0];
+  assert.ok(directBinding.key_name.startsWith("llmhub-"));
+  await client.text("copy", [{ role: "user", content: "pasted platform key" }]);
+  assert.equal(requests.filter((r) => r.path?.includes("chat/completions")).at(-1).authorization, "Bearer mock-pasted-platform-api-key");
+  const directStream = await client.stream("copy", [{ role: "user", content: "pasted platform stream" }]);
+  assert.match(await directStream.text(), /\[DONE\]/);
+  assert.equal(requests.filter((r) => r.path?.includes("chat/completions")).at(-1).authorization, "Bearer mock-pasted-platform-api-key");
+  await new Promise((resolve) => { bifrost.once("exit",resolve); bifrost.kill("SIGTERM"); });
+  const restarted = spawn(process.env.BIFROST_BINARY, ["-host","127.0.0.1","-port",String(bifrostPort),"-app-dir",directory],{env:{...process.env,BIFROST_SETUP_TOKEN:admin},stdio:"ignore"});
+  processes.push(restarted);
+  await ready(bifrostURL,restarted);
+  await client.text("copy", [{ role: "user", content: "platform key survives Bifrost restart" }]);
+  assert.equal(requests.filter((r) => r.path?.includes("chat/completions")).at(-1).authorization, "Bearer mock-pasted-platform-api-key");
+  assert.equal((await readFile(path.join(directory,"bifrost.db"))).includes(Buffer.from("mock-pasted-platform-api-key")), false, "platform API Key must be encrypted in Bifrost SQLite");
+  console.log("PASS: real Bifrost -> local OpenAI/DeepSeek mocks; pasted API key registration/persistence/restart/redaction, project/default/legacy key selection, unary/SSE, peak tariffs, cached usage, conservative estimates and historical snapshots");
 } finally {
   clearTimeout(watchdog);
-  await Promise.all(processes.map((p) => new Promise((resolve) => { if (p.exitCode !== null) return resolve(); p.once("exit", resolve); p.kill("SIGTERM"); setTimeout(() => p.kill("SIGKILL"), 2000).unref(); })));
+  await Promise.all(processes.map((p) => new Promise((resolve) => { if (p.exitCode !== null || p.signalCode !== null) return resolve(); p.once("exit", resolve); p.kill("SIGTERM"); setTimeout(() => p.kill("SIGKILL"), 2000).unref(); })));
   await new Promise((resolve) => mock.close(resolve));
   await rm(directory, { recursive: true, force: true });
 }

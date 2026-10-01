@@ -10,12 +10,14 @@ export function CredentialBindingsEditor({
 	config,
 	prefix,
 	busy = false,
+	errors = {},
 }: {
 	value: ProviderCredential[];
 	onChange: (rows: ProviderCredential[]) => void;
 	config: Config;
 	prefix: string;
 	busy?: boolean;
+	errors?: Record<string, string>;
 }) {
 	const rowIDs = useRef(value.map(() => crypto.randomUUID()));
 	const update = (index: number, patch: Partial<ProviderCredential>) =>
@@ -23,12 +25,12 @@ export function CredentialBindingsEditor({
 	return (
 		<section className="credential-bindings">
 			<div className="section-title">
-				<h3>{prefix === "default" ? "Default 上游密钥引用" : "项目专用上游密钥引用"}</h3>
+				<h3>{prefix === "default" ? "默认平台 API Key" : "项目专用平台 API Key"}</h3>
 				<button
 					type="button"
 					className="icon"
-					title="添加供应商密钥引用"
-					aria-label="添加供应商密钥引用"
+					title="添加平台 API Key"
+					aria-label="添加平台 API Key"
 					disabled={busy || value.length >= 64}
 					onClick={() => {
 						rowIDs.current.push(crypto.randomUUID());
@@ -41,50 +43,68 @@ export function CredentialBindingsEditor({
 			</div>
 			{value.length === 0 && (
 				<div className="credential-empty">
-					{prefix === "default" ? "未设置全局 default，沿用 Profile 默认值" : "未配置的供应商使用 default"}
+					{prefix === "default" ? "尚未设置，使用已有模型配置中的平台密钥" : "未单独配置的平台使用默认 API Key"}
 				</div>
 			)}
 			{value.map((row, index) => (
 				<fieldset className="credential-row" key={rowIDs.current[index]} disabled={busy} data-testid={`hub-${prefix}-credential-${index}`}>
 					<label>
-						供应商标识
+						平台标识（如 openai）
 						<input
 							value={row.provider}
 							onChange={(e) => update(index, { provider: e.target.value })}
 							placeholder="openai"
 							data-testid={`hub-${prefix}-credential-provider-${index}`}
+							aria-invalid={Boolean(errors[`${index}.provider`])}
 						/>
+						{errors[`${index}.provider`] && (
+							<small className="error" role="alert">
+								第 {index + 1} 个平台的“平台标识”：{errors[`${index}.provider`]}
+							</small>
+						)}
 					</label>
 					<label>
-						Bifrost 密钥名称
+						平台 API Key
 						<input
-							value={row.key_name}
-							onChange={(e) => update(index, { key_name: e.target.value })}
-							placeholder="primary"
+							type="password"
+							value={row.api_key ?? ""}
+							onChange={(e) => update(index, { api_key: e.target.value })}
+							placeholder={row.key_name ? "已配置，留空保持不变" : "粘贴该平台的 API Key"}
 							autoComplete="off"
 							data-testid={`hub-${prefix}-credential-key-${index}`}
+							aria-invalid={Boolean(errors[`${index}.api_key`])}
 						/>
+						{errors[`${index}.api_key`] && (
+							<small className="error" role="alert">
+								第 {index + 1} 个平台的“平台 API Key”：{errors[`${index}.api_key`]}
+							</small>
+						)}
 					</label>
 					<label>
-						上游限额池
+						限额池（可选）
 						<select
-							value={row.pool_id}
+							value={row.pool_id ?? ""}
 							onChange={(e) => update(index, { pool_id: e.target.value })}
 							data-testid={`hub-${prefix}-credential-pool-${index}`}
 						>
-							<option value="">选择限额池</option>
+							<option value="">自动使用默认限额设置</option>
 							{config.pools.map((p) => (
 								<option value={p.id} key={p.id}>
 									{p.id}
 								</option>
 							))}
 						</select>
+						{errors[`${index}.pool_id`] && (
+							<small className="error" role="alert">
+								第 {index + 1} 个平台的“限额池”：{errors[`${index}.pool_id`]}
+							</small>
+						)}
 					</label>
 					<button
 						type="button"
 						className="icon"
-						title="移除密钥引用"
-						aria-label="移除密钥引用"
+						title="移除此平台 API Key 配置"
+						aria-label="移除此平台 API Key 配置"
 						onClick={() => {
 							rowIDs.current.splice(index, 1);
 							onChange(value.filter((_, i) => i !== index));
@@ -112,15 +132,22 @@ export function DefaultCredentialsModal({
 }) {
 	const [rows, setRows] = useState(config.default_credentials ?? []);
 	const [error, setError] = useState("");
+	const [fields, setFields] = useState<Record<string, string>>({});
 	return (
-		<Modal title="Default 上游密钥" onClose={onClose}>
+		<Modal title="默认平台 API Key" onClose={onClose}>
 			<form
 				onSubmit={async (e) => {
 					e.preventDefault();
 					setError("");
+					setFields({});
 					const result = hubCredentialsSchema.safeParse(rows);
 					if (!result.success) {
-						setError(result.error.issues.map((v) => v.message).join("；"));
+						const next: Record<string, string> = {};
+						for (const issue of result.error.issues) {
+							if (issue.path.length >= 2) next[issue.path.join(".")] = issue.message;
+							else setError(`平台 API Key 配置：${issue.message}`);
+						}
+						setFields(next);
 						return;
 					}
 					try {
@@ -135,10 +162,12 @@ export function DefaultCredentialsModal({
 					onChange={(v) => {
 						setRows(v);
 						setError("");
+						setFields({});
 					}}
 					config={config}
 					prefix="default"
 					busy={busy}
+					errors={fields}
 				/>
 				{error && (
 					<div className="error" role="alert">

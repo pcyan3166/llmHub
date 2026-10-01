@@ -1,7 +1,9 @@
 package main
 
 import (
+	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/pcyan3166/llmHub/hub/internal/llmhub"
@@ -37,5 +39,19 @@ func TestDemoRestartPreservesConfigurationAndKeys(t *testing.T) {
 	}
 	if _, err = store.Authenticate(token); err != nil {
 		t.Fatal("restart invalidated project key", err)
+	}
+}
+
+func TestDemoPlatformKeyRegistrationIsRedacted(t *testing.T) {
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest("POST", "/api/providers/openai/keys", strings.NewReader(`{"name":"local-reference","value":"sk-do-not-return"}`))
+	mockProvider(w, r)
+	if w.Code != 200 || strings.Contains(w.Body.String(), "sk-do-not-return") || !strings.Contains(w.Body.String(), `"name":"local-reference"`) {
+		t.Fatal(w.Code, w.Body.String())
+	}
+	w = httptest.NewRecorder()
+	mockProvider(w, httptest.NewRequest("DELETE", "/api/providers/openai/keys/local-reference", nil))
+	if w.Code != 204 {
+		t.Fatal(w.Code)
 	}
 }

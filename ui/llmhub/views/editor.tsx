@@ -17,7 +17,7 @@ const labels: Record<string, string> = {
 	provider: "供应商标识",
 	follow_official: "跟随已确认的官方报价",
 	model: "模型 ID",
-	key_name: "Bifrost 密钥名称",
+	key_name: "已有平台密钥配置名称（高级）",
 	pool_id: "共享限额池",
 	max_output_tokens: "最大输出 Token",
 	input_usd_per_million: "默认未缓存输入 / USD 每百万 Token",
@@ -84,6 +84,8 @@ export function Editor({
 	onSave: (row: Record<string, unknown>) => Promise<void>;
 }) {
 	const defaults: Record<string, unknown> = { ...initial[entity], ...row };
+	const fieldLabel = (key: string) =>
+		key === "id" && entity === "projects" ? "项目标识" : key === "name" && entity === "projects" ? "项目名称" : (labels[key] ?? key);
 	const {
 		register,
 		handleSubmit,
@@ -94,13 +96,19 @@ export function Editor({
 	const [route, setRoute] = useState<string[]>((defaults.profiles as string[]) ?? []);
 	const [pricing, setPricing] = useState<PriceSchedule | undefined>(defaults.pricing as PriceSchedule | undefined);
 	const [credentials, setCredentials] = useState<ProviderCredential[]>((defaults.credentials as ProviderCredential[]) ?? []);
+	const [credentialErrors, setCredentialErrors] = useState<Record<string, string>>({});
 	const submit = handleSubmit(async (value) => {
 		if (entity === "scenes") value.profiles = route;
 		if (entity === "profiles") value.pricing = pricing;
 		if (entity === "projects") value.credentials = credentials.length ? credentials : undefined;
 		const result = hubSchemas[entity].safeParse(value);
 		if (!result.success) {
-			for (const issue of result.error.issues) setError(String(issue.path[0] ?? "root"), { message: issue.message });
+			const next: Record<string, string> = {};
+			for (const issue of result.error.issues) {
+				if (issue.path[0] === "credentials" && issue.path.length >= 3) next[issue.path.slice(1).join(".")] = issue.message;
+				else setError(String(issue.path[0] ?? "root"), { message: issue.message });
+			}
+			setCredentialErrors(next);
 			return;
 		}
 		try {
@@ -117,6 +125,7 @@ export function Editor({
 			<form
 				onSubmit={(event) => {
 					clearErrors();
+					setCredentialErrors({});
 					void submit(event);
 				}}
 				data-testid="hub-editor"
@@ -131,7 +140,7 @@ export function Editor({
 						)
 						.map(([key, value]) => (
 							<label className={key === "profiles" ? "wide" : ""} key={key}>
-								<span>{labels[key]}</span>
+								<span>{fieldLabel(key)}</span>
 								{key === "profiles" ? (
 									<div className="route-editor">
 										{config.profiles.map((p) => (
@@ -183,7 +192,11 @@ export function Editor({
 										data-testid={`hub-field-${key}`}
 									/>
 								)}
-								{errors[key] && <small className="error">{String(errors[key]?.message ?? "字段无效")}</small>}
+								{errors[key] && (
+									<small className="error" role="alert">
+										{fieldLabel(key)}：{String(errors[key]?.message ?? "字段无效")}
+									</small>
+								)}
 							</label>
 						))}
 				</div>
@@ -191,11 +204,21 @@ export function Editor({
 					<PricingEditor value={pricing} onChange={setPricing} error={errors.pricing ? String(errors.pricing.message) : undefined} />
 				)}
 				{entity === "projects" && (
-					<CredentialBindingsEditor value={credentials} onChange={setCredentials} config={config} prefix="project" busy={busy} />
+					<CredentialBindingsEditor
+						value={credentials}
+						onChange={(v) => {
+							setCredentials(v);
+							setCredentialErrors({});
+						}}
+						config={config}
+						prefix="project"
+						busy={busy}
+						errors={credentialErrors}
+					/>
 				)}
 				{errors.credentials && (
 					<div className="error" role="alert">
-						{String(errors.credentials.message ?? "密钥引用无效")}
+						平台 API Key 配置：{String(errors.credentials.message ?? "配置无效")}
 					</div>
 				)}
 				{errors.root && (

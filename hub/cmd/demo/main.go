@@ -124,6 +124,27 @@ func mockProvider(w http.ResponseWriter, r *http.Request) {
 		io.WriteString(w, `{"status":"ok"}`)
 		return
 	}
+	if strings.HasPrefix(r.URL.Path, "/api/providers/") {
+		if r.Method == "DELETE" {
+			w.WriteHeader(204)
+			return
+		}
+		var key struct {
+			Name string `json:"name"`
+		}
+		if r.Method != "POST" || json.NewDecoder(r.Body).Decode(&key) != nil || key.Name == "" {
+			w.WriteHeader(400)
+			return
+		}
+		// Do not retain even demo API keys. Production uses Bifrost's encrypted store.
+		write := struct {
+			ID   string `json:"id"`
+			Name string `json:"name"`
+		}{key.Name, key.Name}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(write)
+		return
+	}
 	var b struct {
 		Stream bool   `json:"stream"`
 		Model  string `json:"model"`

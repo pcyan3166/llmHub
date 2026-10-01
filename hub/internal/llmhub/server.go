@@ -21,20 +21,22 @@ import (
 )
 
 type Server struct {
-	Demo      bool // Set before serving by the local mock executable only.
-	store     *Store
-	scheduler *Scheduler
-	client    *http.Client
-	upstream  *url.URL
-	adminHash [32]byte
-	configMu  sync.RWMutex
-	config    Config
-	version   int64
-	admission chan struct{}
-	staticDir string
-	logger    *slog.Logger
-	now       func() time.Time
-	catalog   *Catalog
+	Demo            bool // Set before serving by the local mock executable only.
+	store           *Store
+	scheduler       *Scheduler
+	client          *http.Client
+	upstream        *url.URL
+	adminHash       [32]byte
+	bifrostUser     string
+	bifrostPassword string
+	configMu        sync.RWMutex
+	config          Config
+	version         int64
+	admission       chan struct{}
+	staticDir       string
+	logger          *slog.Logger
+	now             func() time.Time
+	catalog         *Catalog
 }
 
 func NewServer(store *Store, upstream, adminToken, staticDir string) (*Server, error) {
@@ -59,6 +61,7 @@ func NewServer(store *Store, upstream, adminToken, staticDir string) (*Server, e
 	transport := &http.Transport{Proxy: http.ProxyFromEnvironment, MaxIdleConns: 64, MaxIdleConnsPerHost: 32, MaxConnsPerHost: 256, IdleConnTimeout: 60 * time.Second, ResponseHeaderTimeout: 90 * time.Second}
 	client := &http.Client{Transport: transport, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 	s := &Server{store: store, scheduler: scheduler, client: client, upstream: u, adminHash: sha256.Sum256([]byte(adminToken)), config: c, version: version, admission: make(chan struct{}, 128), staticDir: staticDir, logger: slog.Default(), now: time.Now}
+	s.bifrostUser, s.bifrostPassword = os.Getenv("LLMHUB_BIFROST_USERNAME"), os.Getenv("LLMHUB_BIFROST_PASSWORD")
 	s.catalog = newCatalog(s)
 	return s, nil
 }
@@ -168,33 +171,7 @@ func (s *Server) admin(w http.ResponseWriter, r *http.Request) {
 		defer s.configMu.RUnlock()
 		writeJSON(w, 200, map[string]any{"config": s.config, "version": s.version})
 	case r.URL.Path == "/api/llmhub/config" && r.Method == "PUT":
-		var body struct {
-			Config  Config `json:"config"`
-			Version int64  `json:"version"`
-		}
-		if err := readJSON(w, r, &body); err != nil {
-			writeError(w, 400, "invalid_config", err.Error())
-			return
-		}
-		if err := body.Config.Validate(); err != nil {
-			writeError(w, 400, "invalid_config", err.Error())
-			return
-		}
-		s.configMu.Lock()
-		defer s.configMu.Unlock()
-		version, err := s.store.SaveConfig(body.Config, body.Version)
-		if errors.Is(err, ErrConflict) {
-			writeError(w, 409, "version_conflict", err.Error())
-			return
-		}
-		if err != nil {
-			s.fail(w, err)
-			return
-		}
-		s.config = body.Config
-		s.version = version
-		s.scheduler.Update(body.Config.Pools)
-		writeJSON(w, 200, map[string]any{"config": body.Config, "version": version})
+		s.saveConfiguration(w, r)
 	case r.URL.Path == "/api/llmhub/keys" && r.Method == "GET":
 		keys, err := s.store.Keys()
 		if err != nil {
@@ -456,6 +433,9 @@ func (s *Server) inference(w http.ResponseWriter, r *http.Request) {
 			req.Header.Set("Content-Type", "application/json")
 			req.Header.Set("X-BF-API-Key", profile.KeyName)
 			req.Header.Set("X-Request-ID", requestID)
+			if s.bifrostUser != "" {
+				req.SetBasicAuth(s.bifrostUser, s.bifrostPassword)
+			}
 			resp, callErr := s.client.Do(req)
 			if callErr != nil {
 				lease.Finish(input + output)

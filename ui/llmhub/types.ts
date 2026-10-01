@@ -1,4 +1,4 @@
-export type ProviderCredential = { provider: string; key_name: string; pool_id: string };
+export type ProviderCredential = { provider: string; key_name: string; pool_id?: string; api_key?: string };
 export type Project = { id: string; name: string; enabled: boolean; monthly_budget_usd: number; credentials?: ProviderCredential[] };
 export type PriceWindow = {
 	id: string;

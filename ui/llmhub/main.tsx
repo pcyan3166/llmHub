@@ -56,7 +56,7 @@ const nav = [
 	{ id: "pools", label: "共享队列", icon: ListOrdered },
 	{ id: "requests", label: "请求记录", icon: ScrollText },
 	{ id: "usage", label: "用量与成本", icon: ChartNoAxesCombined },
-	{ id: "keys", label: "项目密钥", icon: KeyRound },
+	{ id: "keys", label: "项目访问密钥", icon: KeyRound },
 	{ id: "settings", label: "设置", icon: Settings },
 ];
 const usd = (v: number) => `$${v.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 6 })}`;
@@ -124,7 +124,7 @@ function App() {
 		const { entity, row } = editor;
 		const all = config[entity] as unknown as Record<string, unknown>[];
 		if (!row && all.some((v) => v.id === value.id && (entity !== "scenes" || v.project_id === value.project_id)))
-			throw new Error("标识已存在");
+			throw new Error(`${entity === "projects" ? "项目标识" : "配置标识"}“${value.id}”已存在，请修改标识或编辑已有项目`);
 		const next = {
 			...config,
 			[entity]: row
@@ -530,7 +530,7 @@ function App() {
 													<th>月预算</th>
 													<th>状态</th>
 													<th>场景数</th>
-													<th>上游密钥</th>
+													<th>平台 API Key</th>
 													<th />
 												</tr>
 											</thead>
@@ -548,13 +548,9 @@ function App() {
 														<td>{config.scenes.filter((s) => s.project_id === p.id).length}</td>
 														<td>
 															{p.credentials?.length ? (
-																p.credentials.map((b) => (
-																	<small key={b.provider}>
-																		{b.provider} / {b.key_name}
-																	</small>
-																))
+																p.credentials.map((b) => <small key={b.provider}>{b.provider}：项目专用</small>)
 															) : (
-																<span>default</span>
+																<span>使用默认 API Key</span>
 															)}
 														</td>
 														<td>
@@ -918,7 +914,7 @@ function App() {
 													))}
 												</tbody>
 											</table>
-											{!keysQuery.data?.keys.length && <Empty label="暂无项目密钥" />}
+											{!keysQuery.data?.keys.length && <Empty label="暂无项目访问密钥" />}
 										</div>
 									</>
 								)}
@@ -928,12 +924,12 @@ function App() {
 											<div className="section-title">
 												<h2>
 													<KeyRound size={18} />
-													Default 上游密钥
+													默认平台 API Key
 												</h2>
 												<button
 													className="icon"
-													title="编辑 default 上游密钥"
-													aria-label="编辑 default 上游密钥"
+													title="编辑默认平台 API Key"
+													aria-label="编辑默认平台 API Key"
 													onClick={() => setDefaultCredentialsOpen(true)}
 													data-testid="hub-default-credentials-edit"
 												>
@@ -945,14 +941,12 @@ function App() {
 													{config.default_credentials.map((b) => (
 														<React.Fragment key={b.provider}>
 															<dt>{b.provider}</dt>
-															<dd>
-																{b.key_name} / {b.pool_id}
-															</dd>
+															<dd>已配置 · {b.pool_id ? `限额池：${b.pool_id}` : "默认限额设置"}</dd>
 														</React.Fragment>
 													))}
 												</dl>
 											) : (
-												<span>沿用各 Profile 的默认密钥与限额池</span>
+												<span>尚未设置，使用已有模型配置中的平台密钥</span>
 											)}
 										</section>
 										<section>
@@ -1037,7 +1031,7 @@ function App() {
 				</Modal>
 			)}
 			{revoke && (
-				<Modal title="吊销项目密钥" onClose={() => setRevoke(undefined)}>
+				<Modal title="吊销项目访问密钥" onClose={() => setRevoke(undefined)}>
 					<p>吊销后，这个密钥将无法再提交请求。</p>
 					<footer>
 						<button onClick={() => setRevoke(undefined)}>取消</button>
@@ -1059,7 +1053,7 @@ function App() {
 				</Modal>
 			)}
 			{secret && (
-				<Modal title="项目密钥已签发" onClose={() => setSecret("")}>
+				<Modal title="项目访问密钥已签发" onClose={() => setSecret("")}>
 					<p>明文仅在本次显示。</p>
 					<div className="secret">
 						<code data-testid="hub-key-secret">{secret}</code>
@@ -1081,13 +1075,13 @@ function App() {
 					<dl className="request-detail">
 						{selected.price_snapshot?.applied_price && (
 							<>
-								<dt>上游密钥来源</dt>
+								<dt>平台 API Key 来源</dt>
 								<dd>
 									{selected.price_snapshot.applied_price.credential_source === "project"
 										? "项目专用"
 										: selected.price_snapshot.applied_price.credential_source === "default"
-											? "全局 default"
-											: "Profile 默认值"}{" "}
+											? "全局默认"
+											: "已有模型配置"}{" "}
 									/ {selected.price_snapshot.key_name} / {selected.price_snapshot.pool_id}
 								</dd>
 								<dt>计价时段</dt>

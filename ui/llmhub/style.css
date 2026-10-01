@@ -719,7 +719,7 @@ pre {
 .credential-row {
 	display: grid;
 	grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1fr) 36px;
-	align-items: end;
+	align-items: start;
 	gap: 10px;
 	margin: 0;
 	padding: 12px 0;
@@ -738,6 +738,12 @@ pre {
 	width: 100%;
 	min-width: 0;
 }
+.credential-row input[aria-invalid="true"] {
+	border-color: #bf424d;
+}
+.credential-row > button {
+	margin-top: 20px;
+}
 @media (max-width: 600px) {
 	.credential-row {
 		grid-template-columns: minmax(0, 1fr) 36px;
@@ -746,6 +752,7 @@ pre {
 		grid-column: 1;
 	}
 	.credential-row button {
+		margin-top: 0;
 		grid-column: 2;
 		grid-row: 1 / 4;
 		align-self: center;

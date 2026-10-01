@@ -87,15 +87,23 @@ const pricing = z
 	});
 export const hubCredentialsSchema = z
 	.array(
-		z.object({
-			provider: id,
-			key_name: z
-				.string()
-				.min(1, "请输入 Bifrost 密钥名称")
-				.max(128)
-				.refine((v) => v.trim() === v && !/[\x00-\x1f\x7f]/.test(v), "密钥名称不能包含控制字符或首尾空格"),
-			pool_id: id,
-		}),
+		z
+			.object({
+				provider: id,
+				key_name: z.string().max(128).default(""),
+				api_key: z
+					.string()
+					.max(4096, "API Key 不能超过 4096 字符")
+					.refine(
+						(v) => !v || (v.trim() === v && !/[\x00-\x20\x7f]/.test(v) && !v.startsWith("env.")),
+						"请粘贴平台颁发的完整 API Key，不要包含空白或环境变量引用",
+					)
+					.optional(),
+				pool_id: z.union([z.literal(""), id]).optional(),
+			})
+			.superRefine((row, ctx) => {
+				if (!row.key_name && !row.api_key) ctx.addIssue({ code: "custom", path: ["api_key"], message: "请填写平台 API Key" });
+			}),
 	)
 	.max(64)
 	.superRefine((rows, ctx) => {

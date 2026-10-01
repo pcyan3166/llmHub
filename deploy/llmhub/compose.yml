@@ -34,6 +34,8 @@ services:
       - "127.0.0.1:8080:8080"
     environment:
       LLMHUB_ADMIN_TOKEN: ${LLMHUB_ADMIN_TOKEN:?Set an admin token of at least 24 characters}
+      LLMHUB_BIFROST_USERNAME: ${LLMHUB_BIFROST_USERNAME:-}
+      LLMHUB_BIFROST_PASSWORD: ${LLMHUB_BIFROST_PASSWORD:-}
       GOMAXPROCS: "1"
       GOMEMLIMIT: "96MiB"
     volumes:

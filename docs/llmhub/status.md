@@ -87,6 +87,10 @@ DeepSeek 示例核对日期为 2026-10-01，价格来源与年度日历来源记
 
 本次仅修改独立 `hub/` 与 companion 控制台，未更改上游 provider wire 层；上游付费 provider harness 不适用，选钥路径已用真实 Bifrost 加本地模拟供应商验证。没有使用真实供应商凭证或产生模型费用。本地预览数据库升级前备份为 `/private/tmp/llmhub-before-project-credentials.db`，升级和 QA 清理后的业务配置与备份逐项相同，原有项目及密钥保留。
 
+## 配置文案与 API Key 直填
+
+2026-10-01 配置文案修正：项目 / 默认平台 API Key 页面直接接收平台密钥，内部自动登记到私有 Bifrost，不再要求手填内部名称。错误提示包含行号与具体字段，并显示在对应输入框下；限额池可留空，继承默认设置而非关闭限流。API Key 密码输入、已配置留空保留、不回显明文、版本冲突与失败清理均有回归。真实 Bifrost v2.2.4 已验证自动登记、SQLite 持久化、普通 / SSE 选钥及进程重启后仍使用新密钥。本地预览升级前备份为 `/private/tmp/llmhub-before-api-key-ux.db`。
+
 ## 尚未验证的环境项
 
 本机 Docker daemon 没有运行，未实际构建或启动 Compose 容器。上游要求 Go 1.27，本机为 Go 1.26.5，因此没有编译上游 Bifrost dev 树。控制层使用独立 Go 1.26 模块并已编译测试。

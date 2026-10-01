@@ -46,7 +46,7 @@ export const api = createApi({
 		}),
 		keys: build.query<{ keys: Key[] }, void>({ query: () => "keys", providesTags: ["Keys"] }),
 		save: build.mutation<ConfigResponse, { config: Config; version: number }>({
-			query: (body) => ({ url: "config", method: "PUT", body }),
+			query: (body) => ({ url: "config", method: "PUT", body, timeout: 15000 }),
 			invalidatesTags: ["Config", "Usage"],
 		}),
 		createKey: build.mutation<{ key: Key; token: string }, string>({

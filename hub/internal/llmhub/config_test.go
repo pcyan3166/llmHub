@@ -26,6 +26,20 @@ func TestProjectCredentialsPrecedenceAndValidation(t *testing.T) {
 	if c.Profiles[0].KeyName != "primary" || c.Profiles[0].PoolID != "shared" {
 		t.Fatal("resolution mutated config")
 	}
+	c.DefaultCredentials[0].PoolID = "dedicated"
+	c.Projects[0].Credentials = []ProviderCredential{{Provider: "openai", KeyName: "project"}}
+	if err := c.Validate(); err != nil {
+		t.Fatal("empty pool rejected", err)
+	}
+	p, _ = c.resolvedProfile("storepilot", "text-fast")
+	if p.PoolID != "dedicated" {
+		t.Fatal("project did not inherit default pool", p)
+	}
+	c.DefaultCredentials[0].PoolID = ""
+	p, _ = c.resolvedProfile("storepilot", "text-fast")
+	if p.PoolID != "shared" {
+		t.Fatal("project did not inherit profile pool", p)
+	}
 	for _, bindings := range [][]ProviderCredential{
 		{{Provider: "openai", KeyName: "x", PoolID: "absent"}},
 		{{Provider: "openai", KeyName: "x", PoolID: "shared"}, {Provider: "openai", KeyName: "y", PoolID: "shared"}},

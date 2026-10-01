@@ -5,3 +5,7 @@ BIFROST_SETUP_TOKEN=REPLACE_WITH_RANDOM_SETUP_SECRET
 OPENAI_API_KEY=REPLACE_WITH_PROVIDER_KEY
 # Add Anthropic in the Bifrost console before enabling text.quality fallback.
 ANTHROPIC_API_KEY=
+# Bifrost admin credentials, only needed when its admin authentication is enabled.
+# Keep these on the server; llmHub uses them to save platform API keys in Bifrost.
+LLMHUB_BIFROST_USERNAME=
+LLMHUB_BIFROST_PASSWORD=

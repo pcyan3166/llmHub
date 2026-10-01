@@ -29,7 +29,8 @@ type Project struct {
 type ProviderCredential struct {
 	Provider string `json:"provider"`
 	KeyName  string `json:"key_name"`
-	PoolID   string `json:"pool_id"`
+	PoolID   string `json:"pool_id,omitempty"`
+	APIKey   string `json:"api_key,omitempty"` // Write-only input; must be cleared before persistence.
 }
 
 type Profile struct {
@@ -150,9 +151,24 @@ func validateCredentials(bindings []ProviderCredential, pools map[string]bool) e
 		return fmt.Errorf("too many provider bindings")
 	}
 	seen := map[string]bool{}
-	for _, b := range bindings {
-		if !idPattern.MatchString(b.Provider) || seen[b.Provider] || strings.TrimSpace(b.KeyName) != b.KeyName || b.KeyName == "" || len(b.KeyName) > 128 || strings.IndexFunc(b.KeyName, func(r rune) bool { return r < 32 || r == 127 }) >= 0 || !pools[b.PoolID] {
-			return fmt.Errorf("invalid or duplicate provider binding %q", b.Provider)
+	for i, b := range bindings {
+		field := func(name, message string) error {
+			return fmt.Errorf("第 %d 个平台（%s）的%s：%s", i+1, b.Provider, name, message)
+		}
+		if !idPattern.MatchString(b.Provider) {
+			return field("平台标识", "请输入 1 至 64 位字母、数字、点、短横线或下划线，首位须为字母或数字")
+		}
+		if seen[b.Provider] {
+			return field("平台标识", "同一平台不能重复配置")
+		}
+		if b.APIKey != "" {
+			return field("API Key", "明文尚未交给供应商网关保存，不能写入配置")
+		}
+		if strings.TrimSpace(b.KeyName) != b.KeyName || b.KeyName == "" || len(b.KeyName) > 128 || strings.IndexFunc(b.KeyName, func(r rune) bool { return r < 32 || r == 127 }) >= 0 {
+			return field("API Key", "请填写平台 API Key；已有密钥可留空保持不变")
+		}
+		if b.PoolID != "" && !pools[b.PoolID] {
+			return field("限额池", "所选限额池不存在，请重新选择或留空使用默认设置")
 		}
 		seen[b.Provider] = true
 	}
@@ -161,6 +177,13 @@ func validateCredentials(bindings []ProviderCredential, pools map[string]bool) e
 
 func (c Config) resolvedProfile(projectID, profileID string) (Profile, string) {
 	p := c.Profile(profileID)
+	defaultPool := p.PoolID
+	for _, b := range c.DefaultCredentials {
+		if b.Provider == p.Provider && b.PoolID != "" {
+			defaultPool = b.PoolID
+			break
+		}
+	}
 	project, _ := c.Project(projectID)
 	for _, group := range []struct {
 		bindings []ProviderCredential
@@ -168,7 +191,10 @@ func (c Config) resolvedProfile(projectID, profileID string) (Profile, string) {
 	}{{project.Credentials, "project"}, {c.DefaultCredentials, "default"}} {
 		for _, b := range group.bindings {
 			if b.Provider == p.Provider {
-				p.KeyName, p.PoolID = b.KeyName, b.PoolID
+				p.KeyName, p.PoolID = b.KeyName, defaultPool
+				if b.PoolID != "" {
+					p.PoolID = b.PoolID
+				}
 				return p, group.source
 			}
 		}
